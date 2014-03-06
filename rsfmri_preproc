@@ -1,0 +1,240 @@
+#!/bin/bash
+# author: mhollen@nmr.mgh.harvard.edu
+
+set -e
+
+# not enough args
+if [[ $# -lt 3 ]]; then
+    echo "usage: $0 subject_dir anat.nii bold1.nii [bold2.nii...]"
+    exit 0;
+fi
+
+# settings
+
+# standard space
+STANDARD=$FSLDIR/data/standard/MNI152_T1_2mm
+STANDARD_BRAIN=$FSLDIR/data/standard/MNI152_T1_2mm_brain
+
+# masks
+MASK_VENTRICLES=$FSLDIR/data/standard/avg152T1_ventricles_MNI.nii.gz
+MASK_WM=$FSLDIR/data/standard/avg152T1_WM_MNI.nii.gz
+MASK_WHOLEBRAIN=$FSLDIR/data/standard/MNI152_T1_2mm_brain_mask.nii.gz
+
+# config
+FLIRT_CONF=$FSL_DIR/etc/flirtsch/sch3Dtrans_3dof
+FNIRT_CONF=$FSLDIR/etc/flirtsch/T1_2_MNI152_2mm.cnf
+
+# user settings
+SKIP=4 # drop first N frames
+FWHM=4 # in mm
+BPSS_LO=0.009
+BPSS_HI=0.08 
+
+# inputs
+
+SUBJECT_DIR=$1; shift
+ANAT=$1; shift
+BOLDS=$@
+
+# output dir
+d=$SUBJECT_DIR/restproc
+
+# create output dir (and parent dirs)
+mkdir -p $d
+
+# functional inputs
+if [[ $# -gt 1 ]]; then
+    # concatenate EPIs, if necessary
+    echo "Merging functionals..."
+    fslmerge -t $d/bold.nii.gz $BOLDS
+else
+    # if only 1 EPI, copy into output dir
+    echo "Copying functional data..."
+    mri_convert $BOLDS $d/bold.nii.gz
+fi
+
+# anat input (copy to output dir)
+echo "Copying anatomical data (reorienting to LAS)..."
+mri_convert --out_orientation LAS $ANAT $d/anat.nii.gz
+
+# reorient
+echo "Reorienting functional"
+mri_convert --out_orientation LAS $d/bold.nii.gz $d/bold_reorient.nii.gz
+
+# remove first N frames
+echo "Removing first $SKIP frames from functional"
+numvols=`echo "$(fslnvols $d/bold_reorient) - $SKIP" | bc`
+fslroi $d/bold_reorient $d/bold_reorient_skip $SKIP $numvols
+
+# TODO
+# slice time correction? (need to find scan timing)
+# slicetimer -i bold -o bold_stc -r <TR>  (either --odd or --down, or blank)
+
+#motion correction
+echo "Motion correction"
+mcflirt -in $d/bold_reorient_skip -out $d/bold_reorient_skip_mc -plots -report
+
+# plot motion
+echo "Plotting motion parameters"
+fsl_tsplot -i $d/bold_reorient_skip_mc.par -t 'MCFLIRT estimated rotations (radians)' \
+           -u 1 --start=1 --finish=3 -a x,y,z -w 640 -h 144 -o $d/bold_reorient_skip_mc_rot.png
+fsl_tsplot -i $d/bold_reorient_skip_mc.par -t 'MCFLIRT estimated translations (mm)' \
+           -u 1 --start=4 --finish=6 -a x,y,z -w 640 -h 144 -o $d/bold_reorient_skip_mc_trans.png
+
+# save motion regressors as separate files 
+mkdir -p $d/nuisance
+for x in $(seq 1 6); do
+    cat $d/bold_reorient_skip_mc.par | awk '{print $'${x}'}' > $d/nuisance/regressor.motion${x}.txt
+done
+
+#pull out middle volume for reference (the second to last number #is half the total number of volumes you have)
+echo "Pulling middle frame from bold as example_func"
+midframe=`echo "$(fslnvols $d/bold_reorient_skip_mc) / 2" | bc`
+fslroi $d/bold_reorient_skip_mc $d/example_func $midframe 1
+
+#skull strip it
+echo "Skull stripping example_func"
+bet $d/example_func $d/example_func_brain -f .3 
+
+#skull strip anat
+echo "Skull stripping anat"
+bet $d/anat $d/anat_brain -R -g -.4 -f .35
+
+#make directory for registration matrices
+echo "Making directory for registration matrices"
+mkdir -p $d/reg
+
+# register example_func to anatomical
+echo "Registering example_func to anat (using epi_reg)"
+echo " * will use wm boundaries from t1"
+echo " * produces matrices and transformed volume"
+epi_reg --epi=$d/example_func \
+        --t1=$d/anat \
+        --t1brain=$d/anat_brain \
+        --out=$d/reg/example_func2anat
+
+# register anat to standard space
+echo "Registering anat to standard (using 12 dof)"
+flirt -in $d/anat_brain \
+      -ref $STANDARD_BRAIN \
+      -cost corratio \
+      -dof 12 \
+      -searchrx -90 90 \
+      -searchry -90 90 \
+      -searchrz -90 90 \
+      -interp trilinear \
+      -omat $d/reg/anat2standard.mat
+
+# concatenate matrices
+echo "Concatenating matrices (func -> anat -> standard)"
+convert_xfm -omat $d/reg/example_func2standard.mat \
+            -concat $d/reg/anat2standard.mat \
+            $d/reg/example_func2anat.mat
+
+# make inverse matrices
+echo "Inversing matrices"
+convert_xfm -omat $d/reg/standard2example_func.mat \
+            -inverse $d/reg/example_func2standard.mat
+convert_xfm -omat $d/reg/anat2example_func.mat \
+            -inverse $d/reg/example_func2anat.mat
+convert_xfm -omat $d/reg/standard2anat.mat \
+            -inverse $d/reg/anat2standard.mat
+
+# normalize anat
+echo "Applying linear registration, anat (brain) to standard"
+flirt -in $d/anat_brain \
+      -out $d/anat_brain_atl \
+      -ref $STANDARD_BRAIN \
+      -applyxfm \
+      -init $d/reg/anat2standard.mat \
+      -interp trilinear
+
+# normalize bold
+echo "Applying linear registration, functional to standard"
+flirt -in $d/bold_reorient_skip_mc \
+      -out $d/bold_reorient_skip_mc_atl \
+      -ref $STANDARD_BRAIN \
+      -applyxfm \
+      -init $d/reg/example_func2standard.mat \
+      -interp trilinear
+
+# normalize example (for qc)
+echo "Applying linear registration, example_func to standard"
+echo " * this can be used for qc purposes"
+flirt -in $d/example_func_brain \
+      -out $d/example_func_brain_atl \
+      -ref $STANDARD_BRAIN \
+      -applyxfm \
+      -init $d/reg/example_func2standard.mat \
+      -interp trilinear
+
+############################################
+# BELOW: nonlinear normalization (needs some work)
+#  TODO: use fieldmap to correct functional
+############################################
+
+# normalize bold
+#echo "Performing non-linear normalization, anat to standard"
+#echo " * initialized with flirt (linear) registration"
+#echo " * uses non-skull-stripped anat"
+#fnirt --in=$d/anat \
+#      --aff=$d/reg/anat2standard.mat \
+#      --config=$FNIRT_CONF \
+#      --cout=$d/reg/anat2standard.fnirt.coef \
+#      --iout=$d/anat_brain_atl_warp
+
+#echo "Applying non-linear transform, functional to standard"
+#echo " * using warp parameters from fnirt anat2standard"
+#applywarp -i $d/bold_reorient_skip_mc \
+#          -r $STANDARD \
+#          -o $d/bold_reorient_skip_mc_atl_warp \
+#          --warp=$d/reg/anat2standard.fnirt.coef \
+#          --premat=$d/reg/example_func2anat.mat
+
+############################################
+# BELOW: everything below uses linearly transformed images.
+#  TODO: in the future, modify to use warped images
+############################################
+
+# guassian smooth
+echo "Smoothing (${FWHM}mm) functional images"
+mri_fwhm --smooth-only \
+         --i $d/bold_reorient_skip_mc_atl.nii.gz \
+         --o $d/bold_reorient_skip_mc_atl_fwhm${FWHM}.nii.gz
+
+
+# extract mean wm time series
+echo "Extracting mean white-matter time course signal"
+fslmeants -i $d/bold_reorient_skip_mc_atl_fwhm${FWHM}.nii.gz \
+          -m $MASK_WM \
+          -o $d/nuisance/regressor.wm.txt
+
+# extract mean whole brain time series
+echo "Extracting mean whole-brain time course signal"
+fslmeants -i $d/bold_reorient_skip_mc_atl_fwhm${FWHM}.nii.gz \
+          -m $MASK_WHOLEBRAIN \
+          -o $d/nuisance/regressor.wholebrain.txt
+
+# extract mean ventricle time series
+echo "Extracting mean ventricles time course signal"
+fslmeants -i $d/bold_reorient_skip_mc_atl_fwhm${FWHM}.nii.gz \
+          -m $MASK_VENTRICLES \
+          -o $d/nuisance/regressor.ventricles.txt
+
+# bandpass
+echo "Applying bandpass filter (low: $BPSS_LO, high: $BPSS_HI)"
+echo "whilst also regressing out nuisance signals (motion, wm, whole brain, csf)"
+3dBandpass -prefix $d/bold_reorient_skip_mc_atl_fwhm${FWHM}_bpss_resid.nii.gz \
+           -ort $d/nuisance/regressor.wm.txt \
+           -ort $d/nuisance/regressor.wholebrain.txt \
+           -ort $d/nuisance/regressor.ventricles.txt \
+           -ort $d/nuisance/regressor.motion1.txt \
+           -ort $d/nuisance/regressor.motion2.txt \
+           -ort $d/nuisance/regressor.motion3.txt \
+           -ort $d/nuisance/regressor.motion4.txt \
+           -ort $d/nuisance/regressor.motion5.txt \
+           -ort $d/nuisance/regressor.motion6.txt \
+           -mask $MASK_WHOLEBRAIN \
+           $BPSS_LO $BPSS_HI \
+           $d/bold_reorient_skip_mc_atl_fwhm${FWHM}.nii.gz
+
