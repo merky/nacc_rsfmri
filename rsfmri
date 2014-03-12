@@ -1,8 +1,10 @@
 #!/usr/bin/python
 
 import os
+import re
 import sys
 import logging
+import tempfile
 import argparse
 import numpy as np
 import subprocess as sub
@@ -70,10 +72,10 @@ def parse_args():
     parser.add_argument('--label', '-l', metavar='name', type=str,
                         help='Name of current analysis (creates directory)', required=True)
     parser.add_argument('--seed', metavar=('name','x','y','z'), nargs=4, action='append',
-                        help='Single analysis using coordinates (x,y,z) of seed position in standard space (e.g. MNI152)',
+                        help='Use coordinates (x,y,z) as seed position in standard space (e.g. MNI152)',
                         required = False)
     parser.add_argument('--radius', metavar='x', type=int,
-                        help='Spherical radius (in mm) of seeds (only applicable when using coordinate inputs)',
+                        help='Spherical radius (in mm) of seeds (required with --seed)',
                         required = False)
     args = parser.parse_args()
 
@@ -101,17 +103,20 @@ def parse_args():
 
 class fcanalysis(object):
     seeds = {}
+    results = {}
 
-    def __init__(self, label, dir_output, dir_input, sessions):
+    def __init__(self, label, output_dir, input_dir, sessions):
         # define directories
-        self.dir_input    = os.path.abspath(dir_input)
-        self.dir_output   = os.path.abspath(dir_output)
-        self.dir_results  = os.path.join(dir_output, label)
-        self.dir_seeds    = os.path.join(self.dir_results, 'seeds')
-        self.dir_vols     = os.path.join(self.dir_results, 'results/volumes')
-        self.dir_mats     = os.path.join(self.dir_results, 'results/matrices')
-        self.dir_imgs     = os.path.join(self.dir_results, 'results/imgs')
-        self.dir_ts       = os.path.join(self.dir_results, 'results/timecourse')
+        self.dir_input    = os.path.abspath(input_dir)
+        self.dir_output   = os.path.join(os.path.abspath(output_dir), label)
+        self.dir_seeds    = os.path.join(self.dir_output, 'seeds')
+        self.dir_sessions = os.path.join(self.dir_output, 'sessions')
+        self.dir_results  = os.path.join(self.dir_output, 'results')
+        self.dir_vols     = os.path.join(self.dir_output, 'results','volumes')
+        self.dir_mats     = os.path.join(self.dir_output, 'results','matrices')
+        self.dir_imgs     = os.path.join(self.dir_output, 'results','imgs')
+        self.dir_ts       = os.path.join(self.dir_output, 'results','timecourse')
+        self.dir_group    = os.path.join(self.dir_output, 'results','group-stats')
 
         # create analysis directories
         self.init_dirs()
@@ -121,21 +126,36 @@ class fcanalysis(object):
 
         # set sessions
         self.sessions = sessions
+        self.init_sessions()
+
+        # init sessions
+        self.init_results()
 
 
-    def init_dirs(self):
-        # create directories
+
+    def init_results(self):
+        # initialize results
+        for session in self.sessions:
+            self.results[session] = {'ts':{}, 'rmap':{}, 'zmap':{}}
+
+
+    def init_dirs(self): # create directories
         try:
-            os.makedirs(self.dir_results)
+            os.makedirs(self.dir_output)
         except OSError, e:
             if e.errno ==17:
-                log.error('Results directory already exists: %s', self.dir_results)
+                log.error('Results directory already exists: %s', self.dir_output)
             else:
-                log.error('Could not create results directory: %s', self.dir_results)
+                log.error('Could not create results directory: %s', self.dir_output)
             self.exit()
 
         try:
-            # child directories in results dir
+            # create child dirs in output dir
+            os.makedirs(self.dir_results)
+            os.makedirs(self.dir_sessions)
+            os.makedirs(self.dir_group)
+
+            # these are all in results dir
             os.makedirs(self.dir_seeds)
             os.makedirs(self.dir_vols)
             os.makedirs(self.dir_mats)
@@ -148,7 +168,7 @@ class fcanalysis(object):
 
     def init_log(self, log_level=logging.DEBUG):
         # log file
-        log_filename = os.path.join(self.dir_results, log_filebase)
+        log_filename = os.path.join(self.dir_output, log_filebase)
         log_handler  = logging.FileHandler(log_filename)
         log_handler.setLevel(log_level)
 
@@ -160,9 +180,19 @@ class fcanalysis(object):
         log.addHandler(log_handler)
 
 
-    def exit(self):
-        # TODO: clean up anything?
-        sys.exit()
+    def init_sessions(self):
+        # create session file
+        f = open(os.path.join(self.dir_output, 'sessions.lst'), 'w')
+
+        for session in self.sessions:
+            # soft-links to input session directory
+            os.symlink(os.path.join(self.dir_input, session),
+                       os.path.join(self.dir_sessions, session))
+            # write session id to file
+            f.write('{}{}'.format(session, os.linesep))
+
+        f.close()
+
 
 
     def run(self, cmdstr):
@@ -203,6 +233,11 @@ class fcanalysis(object):
         self.seeds[name] = filename
 
 
+    def extract_ts_all(self):
+        for session in self.sessions:
+            self.extract_ts(session)
+
+
     def extract_ts(self, session):
         bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
 
@@ -215,9 +250,8 @@ class fcanalysis(object):
                       .format(seed_name, session))
 
             # timecourse will be saved to this file
-            ts_file = os.path.join(self.dir_output, 
-                                   self.dir_ts, 
-                                   '{}_{}.1d'.format(session, seed_name))
+            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session, seed_name))
+
             # command string
             cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
                     .format(bold   = bold_file,
@@ -226,26 +260,37 @@ class fcanalysis(object):
 
             self.run(cmd)
 
+            # track files
+            self.set_result('ts', session, seed_name, ts_file)
 
-    def extract_ts_all(self):
-        for session in args.session:
-            self.extract_ts(session)
 
-    def fc_map_all(self):
-        for session in args.session:
-            self.fc_map(session)
+    def set_result(self, prop, session, seed_name, value):
+        # all results are FILES, so we can check existence here
+        if os.path.isfile(value):
+            self.results[session][prop][seed_name] = value
+        else:
+            log.error('expecting file: {}'.format(value))
+            self.exit()
 
-    def fc_map(self, session):
+
+    def get_result(self, prop, session, seed_name):
+        return self.results[session][prop][seed_name]
+
+
+    def fc_voxelwise_all(self):
+        for session in self.sessions:
+            self.fc_voxelwise(session)
+
+
+    def fc_voxelwise(self, session):
         bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
 
-        for seed_name, seed_file in self.seeds.iteritems():
+        for seed_name in self.seeds:
             log.info('running voxel-wise correlation, roi={}, session={}' \
                       .format(seed_name, session))
 
             # timecourse file
-            ts_file = os.path.join(self.dir_output,
-                                   self.dir_ts,
-                                   '{}_{}.1d'.format(session, seed_name))
+            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session, seed_name))
 
             # output volume
             out_file = os.path.join(self.dir_vols,
@@ -259,6 +304,47 @@ class fcanalysis(object):
             # run
             self.run(cmd)
 
+            # results
+            self.set_result('rmap', session, seed_name, out_file)
+
+            # normalize result map
+            self.volume_r2z(session, seed_name, out_file)
+
+    def fc_voxelwise_groupstats(self):
+        for seed_name in self.seeds:
+            zmaps = [self.get_result('zmap', s, seed_name) for s in self.sessions]
+            zmaps_str = ' '.join(zmaps)
+
+            # concatenate vols to temp file
+            tmp = tempfile.mktemp(suffix='.nii.gz')
+            cmd = "fslmerge -t {} {}".format(tmp, zmaps_str)
+            self.run(cmd)
+
+            # run t-test
+            log.info('running group t-test on z-maps, roi={}'.format(seed_name))
+            outbase = os.path.join(self.dir_group, '{}'.format(seed_name))
+            cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
+            self.run(cmd)
+
+
+    def volume_r2z(self, session, seed_name, infile):
+        log.info('converting pearson r-to-z, file: {}'.format(infile))
+
+        outfile = re.sub('.nii.gz$', '_z.nii.gz', infile)
+
+        cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \
+               .format(input = infile, output = outfile)
+
+        self.run(cmd)
+
+        self.set_result('zmap', session, seed_name, outfile)
+
+
+    def exit(self):
+        # TODO: clean up anything?
+        sys.exit()
+
+
 if __name__ == '__main__':
     args = parse_args()
     analysis = fcanalysis(args.label, args.output, args.dir, args.session)
@@ -268,6 +354,7 @@ if __name__ == '__main__':
         analysis.create_seed(name,x,y,z,args.radius)
 
     analysis.extract_ts_all()
-    analysis.fc_map_all()
+    analysis.fc_voxelwise_all()
+    analysis.fc_voxelwise_groupstats()
 
 
