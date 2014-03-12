@@ -1,0 +1,273 @@
+#!/usr/bin/python
+
+import os
+import sys
+import logging
+import argparse
+import numpy as np
+import subprocess as sub
+
+########################
+# settings
+########################
+
+# standard volume
+mri_standard   = '{}/data/standard/MNI152_T1_2mm_brain.nii.gz'.format(os.environ['FSLDIR'])
+mri_brain_mask = '{}/data/standard/MNI152_T1_2mm_brain_mask.nii.gz'.format(os.environ['FSLDIR'])
+
+# fwhm
+fwhm = 4
+
+# directory where rsfmri_preproc output is located
+restproc_dir = 'restproc'
+
+# filename of preprocessed residual volume
+restproc_file = 'bold_reorient_skip_tc_mc_brain_atl_affine_fwhm%d_bpss_resid.nii.gz' % fwhm
+
+# log properties
+log_filebase = 'rsfmri_indiv.log'
+log_label    = 'rsfmri_indiv'
+log_level    = logging.INFO
+
+########################
+# log
+########################
+
+log = logging.getLogger(log_label)
+log.setLevel(logging.DEBUG)
+
+# console output (INFO)
+log_stream = logging.StreamHandler()
+log_stream.setLevel(log_level)
+log_format = logging.Formatter('%(levelname)s - %(message)s')
+log_stream.setFormatter(log_format)
+log.addHandler(log_stream)
+
+# required:
+#  -analysis label
+#  -project directory
+#  -session_id
+#  -seed_file/coord_list/seed_files
+# optional
+#  -rest_preproc_dir
+#  -rest_preproc_file
+#  -seed_names
+#  -reg affine/warp
+#  -voxelwise/roi-roi
+
+########################
+# arguments
+########################
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Run rs-fmri functional connectivity')
+    parser.add_argument('--session', '-s', metavar='id', type=str, action='append',
+                        help='Session ID (found in directory)', required=True)
+    parser.add_argument('--dir', '-d', metavar='path', type=str,
+                        help='Input directory containing session directories', required=True)
+    parser.add_argument('--output', '-o', metavar='path', type=str,
+                        help='Output directory (will create child directory with analysis label name)', required=True)
+    parser.add_argument('--label', '-l', metavar='name', type=str,
+                        help='Name of current analysis (creates directory)', required=True)
+    parser.add_argument('--seed', metavar=('name','x','y','z'), nargs=4, action='append',
+                        help='Single analysis using coordinates (x,y,z) of seed position in standard space (e.g. MNI152)',
+                        required = False)
+    parser.add_argument('--radius', metavar='x', type=int,
+                        help='Spherical radius (in mm) of seeds (only applicable when using coordinate inputs)',
+                        required = False)
+    args = parser.parse_args()
+
+    # let's take a look at the seed argument, if available
+    if getattr(args,'seed') is not None:
+        # dependent on radius argument
+        if getattr(args,'radius') is None:
+            log.error('If coordinate input, must specify radius')
+            sys.exit()
+
+    # check that seed inputs are of correct type
+    for seed in args.seed:
+        try:
+            name,x,y,z = seed
+            seed = [name,float(x),float(y),float(z)]
+        except:
+            log.error('seed input not in correct format: {}'.format(seed))
+            sys.exit()
+
+    return args
+
+##########################
+# functional connectivity
+##########################
+
+class fcanalysis(object):
+    seeds = {}
+
+    def __init__(self, label, dir_output, dir_input, sessions):
+        # define directories
+        self.dir_input    = os.path.abspath(dir_input)
+        self.dir_output   = os.path.abspath(dir_output)
+        self.dir_results  = os.path.join(dir_output, label)
+        self.dir_seeds    = os.path.join(self.dir_results, 'seeds')
+        self.dir_vols     = os.path.join(self.dir_results, 'results/volumes')
+        self.dir_mats     = os.path.join(self.dir_results, 'results/matrices')
+        self.dir_imgs     = os.path.join(self.dir_results, 'results/imgs')
+        self.dir_ts       = os.path.join(self.dir_results, 'results/timecourse')
+
+        # create analysis directories
+        self.init_dirs()
+
+        # log file (in results dir)
+        self.init_log()
+
+        # set sessions
+        self.sessions = sessions
+
+
+    def init_dirs(self):
+        # create directories
+        try:
+            os.makedirs(self.dir_results)
+        except OSError, e:
+            if e.errno ==17:
+                log.error('Results directory already exists: %s', self.dir_results)
+            else:
+                log.error('Could not create results directory: %s', self.dir_results)
+            self.exit()
+
+        try:
+            # child directories in results dir
+            os.makedirs(self.dir_seeds)
+            os.makedirs(self.dir_vols)
+            os.makedirs(self.dir_mats)
+            os.makedirs(self.dir_imgs)
+            os.makedirs(self.dir_ts)
+        except:
+            # if they already exist, big woop!
+            pass
+
+
+    def init_log(self, log_level=logging.DEBUG):
+        # log file
+        log_filename = os.path.join(self.dir_results, log_filebase)
+        log_handler  = logging.FileHandler(log_filename)
+        log_handler.setLevel(log_level)
+
+        # log format
+        log_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        log_handler.setFormatter(log_format)
+
+        # add log handlers
+        log.addHandler(log_handler)
+
+
+    def exit(self):
+        # TODO: clean up anything?
+        sys.exit()
+
+
+    def run(self, cmdstr):
+        log.debug('COMMAND: {}'.format(cmdstr))
+
+        # open process
+        proc = sub.Popen(cmdstr,
+                         shell = True,
+                         executable='/bin/bash',
+                         stdout = sub.PIPE,
+                         stderr = sub.STDOUT)
+
+        # push output to debug log
+        for line in proc.stdout:
+            log.debug(line.strip())
+
+        # for now, we will just block all processes
+        proc.wait()
+
+        if proc.poll():
+            log.error('command returned error: \"{}\"'.format(cmdstr))
+            self.exit()
+
+
+    def create_seed(self, name, x, y, z, radius):
+        log.info('creating seed, {} @ {} {} {}'.format(name,x,y,z))
+
+        filename = os.path.join(self.dir_seeds, '%s_%dmm.nii.gz' % (name, radius,))
+        cmd = '3dUndump -prefix {ofile} -xyz -orient RPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
+                .format(ofile = filename,
+                        std   = mri_standard,
+                        rad   = radius,
+                        x     = x,
+                        y     = y,
+                        z     = z)
+
+        self.run(cmd)
+        self.seeds[name] = filename
+
+
+    def extract_ts(self, session):
+        bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
+
+        if not os.path.isfile(bold_file):
+            log.error('cannot find file: {}'.format(bold_file))
+            self.exit()
+
+        for seed_name, seed_file in self.seeds.iteritems():
+            log.info('extracting timecourse signal, roi={}, session={}' \
+                      .format(seed_name, session))
+
+            # timecourse will be saved to this file
+            ts_file = os.path.join(self.dir_output, 
+                                   self.dir_ts, 
+                                   '{}_{}.1d'.format(session, seed_name))
+            # command string
+            cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
+                    .format(bold   = bold_file,
+                            mask   = seed_file,
+                            output = ts_file)
+
+            self.run(cmd)
+
+
+    def extract_ts_all(self):
+        for session in args.session:
+            self.extract_ts(session)
+
+    def fc_map_all(self):
+        for session in args.session:
+            self.fc_map(session)
+
+    def fc_map(self, session):
+        bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
+
+        for seed_name, seed_file in self.seeds.iteritems():
+            log.info('running voxel-wise correlation, roi={}, session={}' \
+                      .format(seed_name, session))
+
+            # timecourse file
+            ts_file = os.path.join(self.dir_output,
+                                   self.dir_ts,
+                                   '{}_{}.1d'.format(session, seed_name))
+
+            # output volume
+            out_file = os.path.join(self.dir_vols,
+                                    '{}_{}_pearson.nii.gz'.format(session, seed_name))
+
+            cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
+                      .format(output = out_file,
+                              mask   = mri_brain_mask,
+                              file3d = bold_file,
+                              ts     = ts_file)
+            # run
+            self.run(cmd)
+
+if __name__ == '__main__':
+    args = parse_args()
+    analysis = fcanalysis(args.label, args.output, args.dir, args.session)
+
+    # create seeds, if necessary
+    for name, x, y, z in args.seed:
+        analysis.create_seed(name,x,y,z,args.radius)
+
+    analysis.extract_ts_all()
+    analysis.fc_map_all()
+
+
