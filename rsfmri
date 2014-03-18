@@ -7,7 +7,10 @@ import logging
 import tempfile
 import argparse
 import numpy as np
+import pandas as pd
 import subprocess as sub
+import matplotlib.pyplot as plt
+from shutil import rmtree, copyfile
 
 ########################
 # settings
@@ -27,8 +30,8 @@ restproc_dir = 'restproc'
 restproc_file = 'bold_reorient_skip_tc_mc_brain_atl_affine_fwhm%d_bpss_resid.nii.gz' % fwhm
 
 # log properties
-log_filebase = 'rsfmri_indiv.log'
-log_label    = 'rsfmri_indiv'
+log_filebase = 'analysis.log'
+log_label    = 'rsfmri_analysis'
 log_level    = logging.INFO
 
 ########################
@@ -61,23 +64,70 @@ log.addHandler(log_stream)
 # arguments
 ########################
 
+# helper (file)
+def file_input_type(x):
+    if not os.path.exists(x):
+        log.error('File cannot be found: {}'.format(x))
+    return x
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='Run rs-fmri functional connectivity')
-    parser.add_argument('--session', '-s', metavar='id', type=str, action='append',
-                        help='Session ID (found in directory)', required=True)
-    parser.add_argument('--dir', '-d', metavar='path', type=str,
-                        help='Input directory containing session directories', required=True)
-    parser.add_argument('--output', '-o', metavar='path', type=str,
-                        help='Output directory (will create child directory with analysis label name)', required=True)
-    parser.add_argument('--label', '-l', metavar='name', type=str,
-                        help='Name of current analysis (creates directory)', required=True)
-    parser.add_argument('--seed', metavar=('name','x','y','z'), nargs=4, action='append',
-                        help='Use coordinates (x,y,z) as seed position in standard space (e.g. MNI152)',
-                        required = False)
-    parser.add_argument('--radius', metavar='x', type=int,
-                        help='Spherical radius (in mm) of seeds (required with --seed)',
-                        required = False)
+    parser    = argparse.ArgumentParser(description='Run rs-fmri functional connectivity')
+    maingroup = parser.add_argument_group(title='required')
+    sessgroup = parser.add_argument_group(title='sessions (pick one)')
+    seedgroup = parser.add_argument_group(title='seeds (pick one)')
+    actgroup  = parser.add_argument_group(title='actions')
+
+    sessinput = sessgroup.add_mutually_exclusive_group(required=True)
+    seedinput = seedgroup.add_mutually_exclusive_group(required=True)
+
+    # main
+    maingroup.add_argument('--sessdir', '-d', metavar='path', type=file_input_type,
+                           help='Input directory containing session directories',
+                           required=True)
+    maingroup.add_argument('--output', '-o', metavar='path', type=file_input_type,
+                           help='Output directory (will create child directory with analysis label name)',
+                           required=True)
+    maingroup.add_argument('--label', '-l', metavar='name',
+                           help='Name of current analysis (creates directory)',
+                           required=True)
+    # session(s)
+    sessinput.add_argument('--session', '-s', metavar='id', action='append',
+                           help='Session ID (located in input directory). Can use multiple times.')
+    sessinput.add_argument('--sesslist', metavar='file', type=file_input_type,
+                           help='File containing list of session IDs (located in input directory)')
+
+    # seed(s)
+    seedinput.add_argument('--seed', '--coord', metavar=('name','x','y','z'), nargs=4, action='append',
+                           help='Specify seed coordinates (x,y,z). Can use multiple times.')
+    seedinput.add_argument('--coordlist', metavar='file', type=file_input_type,
+                           help='File containing seed coordinates on each line (format: name, x, y, z, [radius])')
+    seedinput.add_argument('--seedlist', metavar='file', type=file_input_type,
+                           help='File containing list of seed files on each line (format: name, file_location)')
+    seedinput.add_argument('--seedvol', metavar=('name','file'), action='append', nargs=2,
+                           help='Volume file to use as single seed. Can use multiple times.')
+
+    # actions
+    actgroup.add_argument('--skip-voxelwise', action='store_false', dest='voxelwise',
+                          help="Skip voxelwise correlations; default is to run")
+    actgroup.add_argument('--skip-matrix', action='store_false', dest='matrix',
+                          help='Skip ROI-ROI correlations, default is to run')
+    actgroup.add_argument('--skip-group-stats', action='store_false', dest='group_stats',
+                          help='Skip group-level stats, default is to run')
+    actgroup.add_argument('--overwrite', '-W', action='store_true',
+                        help='Force overwrite of existing output files')
+
+    # options
+    parser.add_argument('--radius', '-r', metavar='x', type=int,
+                           help='Spherical radius (in mm) of seeds (required with --seed and overwrites any radius specified when using --coordlist)')
+
+    # parse user input
     args = parser.parse_args()
+
+    # check that volume is file
+    if args.seedvol is not None:
+        for name, vol in args.seedvol:
+            file_input_type(vol)
+
 
     # let's take a look at the seed argument, if available
     if getattr(args,'seed') is not None:
@@ -86,22 +136,79 @@ def parse_args():
             log.error('If coordinate input, must specify radius')
             sys.exit()
 
-    # check that seed inputs are of correct type
-    for seed in args.seed:
-        try:
-            name,x,y,z = seed
-            seed = [name,float(x),float(y),float(z)]
-        except:
-            log.error('seed input not in correct format: {}'.format(seed))
-            sys.exit()
+        # check that seed inputs are of correct type
+        for seed in args.seed:
+            try:
+                name,x,y,z = seed
+                seed = [name,float(x),float(y),float(z)]
+            except:
+                log.error('seed input not in correct format: {}'.format(seed))
+                sys.exit()
 
     return args
+
+
+##########################
+# session
+##########################
+
+class FCSession(object):
+    files = {'zmap': {}, 'rmap': {}, 'ts': {}}
+
+    def __init__(self, session_id, parent_dir):
+        self.id   = session_id
+        self.parent_dir  = parent_dir
+        self.dir  = os.path.join(self.parent_dir, self.id)
+        self.bold = os.path.join(self.dir, restproc_dir, restproc_file)
+
+        if not os.path.isdir(self.dir):
+            log.error('cannot find dir: {}'.format(self.dir))
+            sys.exit()
+
+        if not os.path.isfile(self.bold):
+            log.error('cannot find file: {}'.format(self.bold))
+            sys.exit()
+
+    def check_file(self, file_loc):
+        if not os.path.isfile(file_loc):
+            log.error('cannot find file: {}'.format(file_loc))
+            sys.exit()
+
+        return file_loc
+
+    def set_zmap_file(self, seed_name, file_loc):
+        self.files['zmap'][seed_name] = self.check_file(file_loc)
+
+    def set_rmap_file(self, seed_name, file_loc):
+        self.files['rmap'][seed_name] = self.check_file(file_loc)
+
+    def set_ts_file(self, seed_name, file_loc):
+        self.files['ts'][seed_name] = self.check_file(file_loc)
+
+    def get_zmap_file(self, seed_name):
+        return self.files['zmap'][seed_name]
+
+    def get_rmap_file(self, seed_name):
+        return self.files['rmap'][seed_name]
+
+    def get_ts_file(self, seed_name):
+        return self.files['ts'][seed_name]
+
+    def timecourse(self):
+        d = {}
+        for seed,tsfile in self.files['ts'].iteritems():
+            d[seed] = np.genfromtxt(tsfile)
+        return pd.DataFrame(d)
+
+    def fcmatrix(self):
+        return self.timecourse().corr()
+
 
 ##########################
 # functional connectivity
 ##########################
 
-class fcanalysis(object):
+class FCAnalysis(object):
     seeds = {}
     results = {}
 
@@ -118,25 +225,23 @@ class fcanalysis(object):
         self.dir_ts       = os.path.join(self.dir_output, 'results','timecourse')
         self.dir_group    = os.path.join(self.dir_output, 'results','group-stats')
 
+        self.sessions = sessions
+        self.label    = label
+
+
+    def setup(self):
+        # user-called initiation.
+
         # create analysis directories
         self.init_dirs()
 
-        # log file (in results dir)
+        # log file (stored in results dir)
         self.init_log()
 
-        # set sessions
-        self.sessions = sessions
+        # setup sessions
         self.init_sessions()
 
-        # init sessions
-        self.init_results()
-
-
-
-    def init_results(self):
-        # initialize results
-        for session in self.sessions:
-            self.results[session] = {'ts':{}, 'rmap':{}, 'zmap':{}}
+        # TODO: copy over existing seed files into results dir
 
 
     def init_dirs(self): # create directories
@@ -168,8 +273,8 @@ class fcanalysis(object):
 
     def init_log(self, log_level=logging.DEBUG):
         # log file
-        log_filename = os.path.join(self.dir_output, log_filebase)
-        log_handler  = logging.FileHandler(log_filename)
+        self.log_file = os.path.join(self.dir_output, log_filebase)
+        log_handler  = logging.FileHandler(self.log_file)
         log_handler.setLevel(log_level)
 
         # log format
@@ -186,13 +291,12 @@ class fcanalysis(object):
 
         for session in self.sessions:
             # soft-links to input session directory
-            os.symlink(os.path.join(self.dir_input, session),
-                       os.path.join(self.dir_sessions, session))
+            os.symlink(os.path.join(self.dir_input, session.id),
+                       os.path.join(self.dir_sessions, session.id))
             # write session id to file
-            f.write('{}{}'.format(session, os.linesep))
+            f.write('{}{}'.format(session.id, os.linesep))
 
         f.close()
-
 
 
     def run(self, cmdstr):
@@ -220,8 +324,10 @@ class fcanalysis(object):
     def create_seed(self, name, x, y, z, radius):
         log.info('creating seed, {} @ {} {} {}'.format(name,x,y,z))
 
+        # TODO: I'm confused as to why I have to specify 'LPI' orientation here
+        #       when the MNI standard brain is in LAS. AFNI is wacky?
         filename = os.path.join(self.dir_seeds, '%s_%dmm.nii.gz' % (name, radius,))
-        cmd = '3dUndump -prefix {ofile} -xyz -orient RPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
+        cmd = '3dUndump -prefix {ofile} -xyz -orient LPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
                 .format(ofile = filename,
                         std   = mri_standard,
                         rad   = radius,
@@ -230,7 +336,56 @@ class fcanalysis(object):
                         z     = z)
 
         self.run(cmd)
-        self.seeds[name] = filename
+        self.add_seed(name, filename)
+
+
+    def create_seed_from_file(self, list_file, radius=None):
+        # line format in file should be: name, x, y, z, [radius]
+        # where radius is optional
+        f = open(list_file, 'r')
+        try:
+            for i, entry in enumerate(f):
+                fields  = entry.strip().split(',')
+                if len(fields) < 4:
+                    log.warning('line #{} in seed file does not contain enough information, skipping.'.format(i+1))
+                    continue
+
+                n,x,y,z = fields[0:4]
+
+                # radius is optional, so we need to check that it was specified somewhere
+                if radius is None:
+                    if len(fields) == 5:
+                        radius = fields[5]
+                    else:
+                        log.error('When creating seed from a file, you must specify the radius in the file itself or on the command line')
+                        self.exit()
+                self.create_seed(n,x,y,z, radius)
+        finally:
+            f.close()
+
+
+    def add_seed(self, name, filename):
+        if not os.path.isfile(filename):
+            log.error('cannot find seed file: {}'.format(filename))
+            self.exit()
+
+        # copy seed file over to project, if needed
+        seedfile = os.path.join(self.dir_seeds, os.path.basename(filename))
+        if seedfile != filename:
+            log.info('copying seed file into project: {}'.format(filename))
+            copyfile(filename, seedfile)
+
+        self.seeds[name] = seedfile
+
+
+    def add_seed_from_file(list_file):
+        # line format in file should be: name, file_location
+        f = open(list_file)
+        for entry in f:
+            fields = entry.split(',')
+            if len(fields) > 1:
+                name,filename = fields
+                self.add_seed(name, filename)
 
 
     def extract_ts_all(self):
@@ -239,42 +394,60 @@ class fcanalysis(object):
 
 
     def extract_ts(self, session):
-        bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
-
-        if not os.path.isfile(bold_file):
-            log.error('cannot find file: {}'.format(bold_file))
+        if len(self.seeds) == 0:
+            log.error('No seeds specified to extract timecourse, my friend')
             self.exit()
 
         for seed_name, seed_file in self.seeds.iteritems():
             log.info('extracting timecourse signal, roi={}, session={}' \
-                      .format(seed_name, session))
+                      .format(seed_name, session.id))
 
             # timecourse will be saved to this file
-            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session, seed_name))
+            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session.id, seed_name))
 
             # command string
             cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
-                    .format(bold   = bold_file,
+                    .format(bold   = session.bold,
                             mask   = seed_file,
                             output = ts_file)
 
             self.run(cmd)
 
             # track files
-            self.set_result('ts', session, seed_name, ts_file)
-
-
-    def set_result(self, prop, session, seed_name, value):
-        # all results are FILES, so we can check existence here
-        if os.path.isfile(value):
-            self.results[session][prop][seed_name] = value
-        else:
-            log.error('expecting file: {}'.format(value))
-            self.exit()
+            session.set_ts_file(seed_name, ts_file)
 
 
     def get_result(self, prop, session, seed_name):
         return self.results[session][prop][seed_name]
+
+
+    def fc_matrix_groupstats(self):
+        # find mean/std across all matrices
+        pearson_all = pd.Panel({s.id:s.fcmatrix() for s in self.sessions})
+        pearson_mean = pearson_all.mean(axis='items')
+        #pearson_std  = pearson_all.stdev(axis='items')
+
+        # TODO: run t-test
+        # TODO: output heatmap graphic
+        # TODO: html summary???
+
+        # output csv (mean)
+        outfile = os.path.join(self.dir_group, 'fc_pearson_group_mean.csv')
+        pearson_mean.to_csv(outfile)
+
+        # output heatmap
+        # TODO: work on heatmap output (looks horrible; needs labels)
+        outfile = os.path.join(self.dir_imgs, 'fc_pearson_group_mean.png')
+        fig = plt.pcolor(pearson_mean)
+        plt.title('Pearson corr. coeff. between ROIs')
+        plt.colorbar()
+        plt.savefig(outfile)
+
+        # output csv per seed
+        for seed in self.seeds:
+            # file will contain row-per-session, and columns will be target seeds
+            outfile = os.path.join(self.dir_group, 'fc_pearson_{}.csv'.format(seed))
+            pearson_all.major_xs(seed).T.to_csv(outfile)
 
 
     def fc_voxelwise_all(self):
@@ -283,36 +456,35 @@ class fcanalysis(object):
 
 
     def fc_voxelwise(self, session):
-        bold_file = os.path.join(self.dir_input, session, restproc_dir, restproc_file)
-
         for seed_name in self.seeds:
             log.info('running voxel-wise correlation, roi={}, session={}' \
-                      .format(seed_name, session))
+                      .format(seed_name, session.id))
 
             # timecourse file
-            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session, seed_name))
+            ts_file = session.get_ts_file(seed_name)
 
             # output volume
             out_file = os.path.join(self.dir_vols,
-                                    '{}_{}_pearson.nii.gz'.format(session, seed_name))
+                                    '{}_{}_pearson.nii.gz'.format(session.id, seed_name))
 
             cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
                       .format(output = out_file,
                               mask   = mri_brain_mask,
-                              file3d = bold_file,
+                              file3d = session.bold,
                               ts     = ts_file)
             # run
             self.run(cmd)
 
             # results
-            self.set_result('rmap', session, seed_name, out_file)
+            session.set_rmap_file(seed_name, out_file)
 
             # normalize result map
             self.volume_r2z(session, seed_name, out_file)
 
+
     def fc_voxelwise_groupstats(self):
         for seed_name in self.seeds:
-            zmaps = [self.get_result('zmap', s, seed_name) for s in self.sessions]
+            zmaps = [s.get_zmap_file(seed_name) for s in self.sessions]
             zmaps_str = ' '.join(zmaps)
 
             # concatenate vols to temp file
@@ -326,9 +498,15 @@ class fcanalysis(object):
             cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
             self.run(cmd)
 
+            # calculate mean z-map
+            log.info('creating group mean z-map, roi={}'.format(seed_name))
+            outfile = os.path.join(self.dir_group, '{}_z_mean.nii.gz'.format(seed_name))
+            cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
+            self.run(cmd)
+
 
     def volume_r2z(self, session, seed_name, infile):
-        log.info('converting pearson r-to-z, file: {}'.format(infile))
+        log.info('converting r-map to z-map, roi={}, session={}'.format(seed_name, session.id))
 
         outfile = re.sub('.nii.gz$', '_z.nii.gz', infile)
 
@@ -337,7 +515,7 @@ class fcanalysis(object):
 
         self.run(cmd)
 
-        self.set_result('zmap', session, seed_name, outfile)
+        session.set_zmap_file(seed_name, outfile)
 
 
     def exit(self):
@@ -345,16 +523,75 @@ class fcanalysis(object):
         sys.exit()
 
 
+########################
+# MAIN (program logic)
+########################
+
 if __name__ == '__main__':
     args = parse_args()
-    analysis = fcanalysis(args.label, args.output, args.dir, args.session)
 
-    # create seeds, if necessary
-    for name, x, y, z in args.seed:
-        analysis.create_seed(name,x,y,z,args.radius)
+    if args.sesslist:
+        # sessions from file list
+        session_ids = []
+        with open(args.sesslist) as f:
+            for sess in f:
+                if len(sess) > 1:
+                    session_ids.append(sess.strip())
+    else:
+        # sessions from command line
+        session_ids = args.session
 
+    # create session objects
+    sessions = [FCSession(s,args.sessdir) for s in session_ids]
+
+    # initialize analysis object
+    analysis = FCAnalysis(args.label, args.output, args.sessdir, sessions)
+
+    # overwrite output directory if specified
+    if args.overwrite:
+        log.info('*********************************************')
+        log.info('*** WARNING: overwriting existing results! **')
+        log.info('*********************************************')
+        rmtree(analysis.dir_output)
+
+    # creates init dirs/files
+    analysis.setup()
+
+    # create seeds from coords, if necessary
+    if args.seed is not None:
+        for name, x, y, z in args.seed:
+            analysis.create_seed(name,x,y,z,args.radius)
+    if args.coordlist is not None:
+        analysis.create_seed_from_file(args.coordlist, args.radius)
+
+    # add seeds from files
+    if args.seedvol is not None:
+        for name, vol in args.seedvol:
+            analysis.add_seed(name,seedvol)
+    if args.seedlist is not None:
+        analysis.add_seed_from_file(args.seedlist)
+
+    # extract timecourse signal
     analysis.extract_ts_all()
-    analysis.fc_voxelwise_all()
-    analysis.fc_voxelwise_groupstats()
 
+    # 1st level stats
+    if args.voxelwise:
+        analysis.fc_voxelwise_all()
+
+    # no need to make 1st level matrices
+    #if args.matrix:
+    #    analysis.fc_matrix_all()
+
+    # 2nd level stats
+    if args.group_stats:
+        if args.voxelwise:
+            analysis.fc_voxelwise_groupstats()
+        if args.matrix:
+            analysis.fc_matrix_groupstats()
+
+    # TODO: snapshots of rois
+    # TODO: snapshots of group maps
+    # TODO: heatmap of group matrix
+
+    log.info('Completed all steps!')
 
