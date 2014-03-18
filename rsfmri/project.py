@@ -6,13 +6,13 @@ import sys
 import tempfile
 import numpy as np
 import pandas as pd
-import subprocess as sub
 import matplotlib.pyplot as plt
 from shutil import copyfile
 
 # our files
 from settings import *
-from graphics import heatmap
+from graphics import *
+from utils    import run_cmd
 
 ##########################
 # functional connectivity
@@ -118,32 +118,12 @@ class FCProject(object):
         f.close()
 
 
-    def run(self, cmdstr):
-        log.debug('COMMAND: {}'.format(cmdstr))
-
-        # open process
-        proc = sub.Popen(cmdstr,
-                         shell = True,
-                         executable='/bin/bash',
-                         stdout = sub.PIPE,
-                         stderr = sub.STDOUT)
-
-        # push output to debug log
-        for line in proc.stdout:
-            log.debug('CMD OUT: {}'.format(line.strip()))
-
-        # for now, we will just block all processes
-        proc.wait()
-
-        if proc.poll():
-            log.error('command returned error: \"{}\"'.format(cmdstr))
-            self.exit()
 
 
     def create_seed(self, name, x, y, z, radius):
         log.info('creating seed, {} @ {} {} {}'.format(name,x,y,z))
 
-        # TODO: I'm confused as to why I have to specify 'LPI' orientation here
+        # NOTE: I'm confused as to why I have to specify 'LPI' orientation here
         #       when the MNI standard brain is in LAS. AFNI is wacky?
         filename = os.path.join(self.dir_seeds, '%s_%dmm.nii.gz' % (name, radius,))
         cmd = '3dUndump -prefix {ofile} -xyz -orient LPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
@@ -154,13 +134,13 @@ class FCProject(object):
                         y     = y,
                         z     = z)
 
-        self.run(cmd)
+        run_cmd(cmd)
         self.add_seed(name, filename)
 
 
     def create_seed_from_file(self, list_file, radius=None):
         # line format in file should be: name, x, y, z, [radius]
-        # where radius is optional
+        # * note: radius is optional
         f = open(list_file, 'r')
         try:
             for i, entry in enumerate(f):
@@ -232,7 +212,7 @@ class FCProject(object):
                             mask   = seed_file,
                             output = ts_file)
 
-            self.run(cmd)
+            run_cmd(cmd)
 
             # track files
             session.set_ts_file(seed_name, ts_file)
@@ -257,10 +237,14 @@ class FCProject(object):
             outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_{}.csv'.format(seed))
             pearson_all.major_xs(seed).T.to_csv(outfile)
 
+        ################
         ### GRAPHICS ###
+        ################
 
-        # heatmap image filename
-        outfile = os.path.join(self.dir_grp_imgs, 'fc_pearson_group_mean.png')
+        ### heatmap ####
+
+        # image filename
+        outfile = os.path.join(self.dir_grp_imgs, 'fc_pearson_group_mean_heatmap.png')
 
         # remove self-correlation values (to fix scale)
         p_fix = pearson_mean.values
@@ -268,6 +252,19 @@ class FCProject(object):
 
         # create, save figure
         fig = heatmap(p_fix, limits=[0,np.nanmax(p_fix)], labels=pearson_mean.index)
+        plt.savefig(outfile)
+
+        ### heatmap ####
+
+        # image filename
+        outfile = os.path.join(self.dir_grp_imgs, 'fc_pearson_group_mean_network.png')
+
+        # generate network graph
+        g = generate_network_graph(matrix = p_fix,
+                                   thresh = 0.1,
+                                   nodes  = pearson_mean.index)
+        # create, save figure
+        fig = plot_network_graph(g)
         plt.savefig(outfile)
 
 
@@ -294,13 +291,19 @@ class FCProject(object):
                               file3d = session.bold,
                               ts     = ts_file)
             # run
-            self.run(cmd)
+            run_cmd(cmd)
 
             # results
             session.set_rmap_file(seed_name, out_file)
 
             # normalize result map
             self.volume_r2z(session, seed_name, out_file)
+
+            ### graphics ###
+            log.info('Generating snapshot image for results, roi={}, session={}'.format(seed_name, session.id))
+            snap_img = os.path.join(self.dir_imgs,
+                                    '{}_{}_pearson_z_snapshot.png'.format(session.id, seed_name))
+            snapshot_overlay(mri_standard, out_file, snap_img)
 
 
     def fc_voxelwise_groupstats(self):
@@ -311,19 +314,25 @@ class FCProject(object):
             # concatenate vols to temp file
             tmp = tempfile.mktemp(suffix='.nii.gz')
             cmd = "fslmerge -t {} {}".format(tmp, zmaps_str)
-            self.run(cmd)
+            run_cmd(cmd)
 
             # run t-test
             log.info('running group t-test on z-maps, roi={}'.format(seed_name))
             outbase = os.path.join(self.dir_grp_vols, '{}'.format(seed_name))
             cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
-            self.run(cmd)
+            run_cmd(cmd)
 
             # calculate mean z-map
             log.info('creating group mean z-map, roi={}'.format(seed_name))
             outfile = os.path.join(self.dir_grp_vols, '{}_z_mean.nii.gz'.format(seed_name))
             cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
-            self.run(cmd)
+            run_cmd(cmd)
+
+            ### graphics ###
+            log.info('Generating snapshot image for results, roi={}'.format(seed_name))
+            snap_img = os.path.join(self.dir_grp_imgs,
+                                    '{}_pearson_z_snapshot.png'.format(seed_name))
+            snapshot_overlay(mri_standard, outfile, snap_img)
 
 
     def volume_r2z(self, session, seed_name, infile):
@@ -334,7 +343,7 @@ class FCProject(object):
         cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \
                .format(input = infile, output = outfile)
 
-        self.run(cmd)
+        run_cmd(cmd)
 
         session.set_zmap_file(seed_name, outfile)
 
