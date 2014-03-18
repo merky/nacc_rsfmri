@@ -13,10 +13,10 @@ import matplotlib.pyplot as plt
 from shutil import rmtree, copyfile
 
 # our imports
-from settings import *
-from session  import *
-from project  import *
-from args     import *
+from rsfmri.settings import *
+from rsfmri.session  import *
+from rsfmri.project  import *
+from rsfmri.args     import *
 
 
 ########################
