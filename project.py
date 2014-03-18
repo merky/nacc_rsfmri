@@ -12,6 +12,7 @@ from shutil import copyfile
 
 # our files
 from settings import *
+from graphics import heatmap
 
 ##########################
 # functional connectivity
@@ -27,12 +28,18 @@ class FCProject(object):
         self.dir_output   = os.path.join(os.path.abspath(output_dir), label)
         self.dir_seeds    = os.path.join(self.dir_output, 'seeds')
         self.dir_sessions = os.path.join(self.dir_output, 'sessions')
-        self.dir_results  = os.path.join(self.dir_output, 'results')
-        self.dir_vols     = os.path.join(self.dir_output, 'results','volumes')
-        self.dir_mats     = os.path.join(self.dir_output, 'results','matrices')
-        self.dir_imgs     = os.path.join(self.dir_output, 'results','imgs')
-        self.dir_ts       = os.path.join(self.dir_output, 'results','timecourse')
-        self.dir_group    = os.path.join(self.dir_output, 'results','group-stats')
+
+        # results (1st-level)
+        self.dir_results  = os.path.join(self.dir_output, 'results-indiv')
+        self.dir_vols     = os.path.join(self.dir_results, 'vols')
+        self.dir_imgs     = os.path.join(self.dir_results,  'imgs')
+        self.dir_ts       = os.path.join(self.dir_results,  'timecourse')
+
+        # results (2nd level)
+        self.dir_group    = os.path.join(self.dir_output, 'results-group')
+        self.dir_grp_csv  = os.path.join(self.dir_group, 'csv')
+        self.dir_grp_vols = os.path.join(self.dir_group, 'vols')
+        self.dir_grp_imgs = os.path.join(self.dir_group, 'imgs')
 
         self.sessions = sessions
         self.label    = label
@@ -67,14 +74,17 @@ class FCProject(object):
             # create child dirs in output dir
             os.makedirs(self.dir_results)
             os.makedirs(self.dir_sessions)
-            os.makedirs(self.dir_group)
 
             # these are all in results dir
             os.makedirs(self.dir_seeds)
             os.makedirs(self.dir_vols)
-            os.makedirs(self.dir_mats)
             os.makedirs(self.dir_imgs)
             os.makedirs(self.dir_ts)
+
+            os.makedirs(self.dir_group)
+            os.makedirs(self.dir_grp_csv)
+            os.makedirs(self.dir_grp_imgs)
+            os.makedirs(self.dir_grp_vols)
         except:
             # if they already exist, big woop!
             pass
@@ -158,8 +168,10 @@ class FCProject(object):
                 if len(fields) < 4:
                     log.warning('line #{} in seed file does not contain enough information, skipping.'.format(i+1))
                     continue
-
                 n,x,y,z = fields[0:4]
+
+                # replace spaces with underscore
+                n = re.sub(' ','_',n).lower()
 
                 # radius is optional, so we need to check that it was specified somewhere
                 if radius is None:
@@ -233,26 +245,30 @@ class FCProject(object):
         #pearson_std  = pearson_all.stdev(axis='items')
 
         # TODO: run t-test
-        # TODO: output heatmap graphic
         # TODO: html summary???
 
         # output csv (mean)
-        outfile = os.path.join(self.dir_group, 'fc_pearson_group_mean.csv')
+        outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_group_mean.csv')
         pearson_mean.to_csv(outfile)
-
-        # output heatmap
-        # TODO: work on heatmap output (looks horrible; needs labels)
-        outfile = os.path.join(self.dir_imgs, 'fc_pearson_group_mean.png')
-        fig = plt.pcolor(pearson_mean)
-        plt.title('Pearson corr. coeff. between ROIs')
-        plt.colorbar()
-        plt.savefig(outfile)
 
         # output csv per seed
         for seed in self.seeds:
             # file will contain row-per-session, and columns will be target seeds
-            outfile = os.path.join(self.dir_group, 'fc_pearson_{}.csv'.format(seed))
+            outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_{}.csv'.format(seed))
             pearson_all.major_xs(seed).T.to_csv(outfile)
+
+        ### GRAPHICS ###
+
+        # heatmap image filename
+        outfile = os.path.join(self.dir_grp_imgs, 'fc_pearson_group_mean.png')
+
+        # remove self-correlation values (to fix scale)
+        p_fix = pearson_mean.values
+        p_fix[np.where(np.identity(pearson_mean.shape[0]))] = 0
+
+        # create, save figure
+        fig = heatmap(p_fix, limits=[0,np.nanmax(p_fix)], labels=pearson_mean.index)
+        plt.savefig(outfile)
 
 
     def fc_voxelwise_all(self):
@@ -299,13 +315,13 @@ class FCProject(object):
 
             # run t-test
             log.info('running group t-test on z-maps, roi={}'.format(seed_name))
-            outbase = os.path.join(self.dir_group, '{}'.format(seed_name))
+            outbase = os.path.join(self.dir_grp_vols, '{}'.format(seed_name))
             cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
             self.run(cmd)
 
             # calculate mean z-map
             log.info('creating group mean z-map, roi={}'.format(seed_name))
-            outfile = os.path.join(self.dir_group, '{}_z_mean.nii.gz'.format(seed_name))
+            outfile = os.path.join(self.dir_grp_vols, '{}_z_mean.nii.gz'.format(seed_name))
             cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
             self.run(cmd)
 
