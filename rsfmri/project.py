@@ -21,6 +21,7 @@ from utils    import run_cmd
 class FCProject(object):
     seeds = {}
     results = {}
+    report = {}
 
     def __init__(self, label, output_dir, input_dir, sessions):
         # define directories
@@ -333,6 +334,26 @@ class FCProject(object):
             snap_img = os.path.join(self.dir_grp_imgs,
                                     '{}_pearson_z_snapshot.png'.format(seed_name))
             snapshot_overlay(mri_standard, outfile, snap_img)
+
+            # add to report
+            self.report[seed_name] = snap_img
+
+    def generate_report(self):
+        # add header, title, etc.
+        html  = '<html><head><title>FC-RSFMRI: {}</title></head>'.format(self.label)
+        html += '<body><h3>Functional Connectivity Results: {}</h3>'.format(self.label)
+
+        # loop through all seeds
+        for seed in self.seeds:
+            html += '<h5>Seed: {}</h5>'.format(seed)
+            # add image for seed
+            src = os.path.relpath(self.report[seed], start=self.dir_output)
+            html += '<img src=\'{}\' border=0 /><br />'.format(src)
+
+        html += '</body></html>'
+
+        # write to file
+        with open(os.path.join(self.dir_output, 'results-group-report.html'), 'w') as f: f.write(html)
 
 
     def volume_r2z(self, session, seed_name, infile):
