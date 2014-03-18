@@ -21,7 +21,7 @@ from utils    import run_cmd
 class FCProject(object):
     seeds = {}
     results = {}
-    report = {}
+    report = {'seeds':{}, 'group':{}}
 
     def __init__(self, label, output_dir, input_dir, sessions):
         # define directories
@@ -255,18 +255,25 @@ class FCProject(object):
         fig = heatmap(p_fix, limits=[0,np.nanmax(p_fix)], labels=pearson_mean.index)
         plt.savefig(outfile)
 
-        ### heatmap ####
+        # add to report
+        self.add_to_group_report(outfile, 'Heatmap of Functional Connectivity')
+
+        ### network graph ####
 
         # image filename
         outfile = os.path.join(self.dir_grp_imgs, 'fc_pearson_group_mean_network.png')
 
         # generate network graph
+        thresh = 0.1
         g = generate_network_graph(matrix = p_fix,
-                                   thresh = 0.1,
+                                   thresh = thresh,
                                    nodes  = pearson_mean.index)
         # create, save figure
         fig = plot_network_graph(g)
         plt.savefig(outfile)
+
+        # add to report
+        self.add_to_group_report(outfile, 'Network Graph (thresh >= {})'.format(thresh))
 
 
     def fc_voxelwise_all(self):
@@ -336,24 +343,48 @@ class FCProject(object):
             snapshot_overlay(mri_standard, outfile, snap_img)
 
             # add to report
-            self.report[seed_name] = snap_img
+            self.add_to_seed_report(snap_img, seed_name)
+
+
+
+    def add_to_seed_report(self, img, seed):
+        self.report['seeds'][seed] = img
+
+    def add_to_group_report(self, img, desc):
+        self.report['group'][desc] = img
+
 
     def generate_report(self):
         # add header, title, etc.
         html  = '<html><head><title>FC-RSFMRI: {}</title></head>'.format(self.label)
-        html += '<body><h3>Functional Connectivity Results: {}</h3>'.format(self.label)
+        html += '<body><h2>Functional Connectivity Results: {}</h2>'.format(self.label)
 
-        # loop through all seeds
-        for seed in self.seeds:
-            html += '<h5>Seed: {}</h5>'.format(seed)
+        # loop through all generic group results
+        for desc,img in self.report['group'].iteritems():
+            html += '<h3>{}</h3>'.format(desc)
             # add image for seed
-            src = os.path.relpath(self.report[seed], start=self.dir_output)
-            html += '<img src=\'{}\' border=0 /><br />'.format(src)
+            src = os.path.relpath(img, start=self.dir_group)
+            html += '<a href={}><img src=\'{}\' border=0 height=300 /></a><br />'.format(src,src)
+
+        # loop through all seed-specific results
+        for seed,img in self.report['seeds'].iteritems():
+            html += '<h3>Seed: {}</h3>'.format(seed)
+            # add image for seed
+            src = os.path.relpath(img, start=self.dir_group)
+            html += '<a href={}><img src=\'{}\' border=0 height=300 /></a><br />'.format(src,src)
 
         html += '</body></html>'
 
         # write to file
-        with open(os.path.join(self.dir_output, 'results-group-report.html'), 'w') as f: f.write(html)
+        log.info('Generating report...')
+        report_file = os.path.join(self.dir_group, 'report.html')
+        with open(report_file, 'w') as f: f.write(html)
+
+        log.info('*********************************************')
+        log.info('* report: {}'.format(report_file))
+        log.info('*********************************************')
+
+
 
 
     def volume_r2z(self, session, seed_name, infile):
