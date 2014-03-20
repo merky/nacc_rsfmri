@@ -2,6 +2,7 @@
 
 import sys
 import subprocess as sub
+from multiprocessing.pool import ThreadPool
 
 # our imports
 from .settings import *
@@ -30,4 +31,9 @@ def run_cmd(cmdstr):
     # return stdout string
     return stdout
 
+
+pool = ThreadPool()
+def run_cmd_parallel(cmdstr):
+    t = pool.apply_async(run_cmd, (cmdstr,))
+    return t
 

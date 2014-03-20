@@ -12,7 +12,7 @@ from shutil import copyfile
 # our files
 from settings import *
 from graphics import *
-from utils    import run_cmd
+from utils    import run_cmd, run_cmd_parallel
 from reports  import *
 
 ##########################
@@ -31,16 +31,16 @@ class FCProject(object):
         self.dir_sessions = os.path.join(self.dir_output, 'sessions')
 
         # results (1st-level)
-        self.dir_results  = os.path.join(self.dir_output, 'results-indiv')
+        self.dir_results  = os.path.join(self.dir_output,  'results-indiv')
         self.dir_vols     = os.path.join(self.dir_results, 'vols')
-        self.dir_imgs     = os.path.join(self.dir_results,  'imgs')
-        self.dir_ts       = os.path.join(self.dir_results,  'timecourse')
+        self.dir_imgs     = os.path.join(self.dir_results, 'imgs')
+        self.dir_ts       = os.path.join(self.dir_results, 'timecourse')
 
         # results (2nd level)
         self.dir_group    = os.path.join(self.dir_output, 'results-group')
-        self.dir_grp_csv  = os.path.join(self.dir_group, 'csv')
-        self.dir_grp_vols = os.path.join(self.dir_group, 'vols')
-        self.dir_grp_imgs = os.path.join(self.dir_group, 'imgs')
+        self.dir_grp_csv  = os.path.join(self.dir_group,  'csv')
+        self.dir_grp_vols = os.path.join(self.dir_group,  'vols')
+        self.dir_grp_imgs = os.path.join(self.dir_group,  'imgs')
 
         self.sessions = sessions
         self.label    = label
@@ -226,19 +226,32 @@ class FCProject(object):
                 self.add_seed(name, filename)
 
 
-    def extract_ts_all(self):
+    def extract_ts_all(self, parallel=False):
 
         if len(self.seeds) == 0:
             log.error('No seeds specified to extract timecourse, my friend')
             self.exit()
 
+        threads = []
         for session in self.sessions:
             for seed_name in self.seeds:
-                f = self.extract_ts(session, seed_name)
-                session.set_ts_file(seed_name, f)
+                thread,ts_file = self.extract_ts(session, seed_name, parallel=parallel)
+                threads.append({'session': session,
+                                'seed':    seed_name,
+                                'thread':  thread,
+                                'file':    ts_file
+                                })
+
+        if parallel:
+            log.info('Waiting for extraction jobs...')
+            for x in threads:
+                x['thread'].wait()
+                x['session'].set_ts_file(x['seed'], x['file'])
+
+        del threads
 
 
-    def extract_ts(self, session, seed_name):
+    def extract_ts(self, session, seed_name, parallel=False):
 
         log.info('extracting timecourse signal, roi={}, session={}' \
                   .format(seed_name, session.id))
@@ -254,10 +267,17 @@ class FCProject(object):
                         mask   = seed_file,
                         output = ts_file)
         # run!
-        run_cmd(cmd)
-
-        # return new file location
-        return ts_file
+        if parallel:
+            # run, return thread (via threadpool)
+            t = run_cmd_parallel(cmd)
+            return (t, ts_file)
+        else:
+            # run (blocking)
+            run_cmd(cmd)
+            # add timecourse file to session instance
+            session.set_ts_file(seed_name, ts_file)
+            # return resulting file
+            return (None, ts_file)
 
 
     def fc_matrix_groupstats(self):
@@ -313,42 +333,42 @@ class FCProject(object):
         self.report_summary.add_img(outfile, 'Network Graph (thresh >= {})'.format(thresh))
 
 
-    def fc_voxelwise_all(self):
+    def fc_voxelwise_all(self, parallel=False):
         for session in self.sessions:
-            self.fc_voxelwise(session)
+            for seed_name in self.seeds:
+                self.fc_voxelwise(session, seed_name)
 
 
-    def fc_voxelwise(self, session):
-        for seed_name in self.seeds:
-            log.info('running voxel-wise correlation, roi={}, session={}' \
-                      .format(seed_name, session.id))
+    def fc_voxelwise(self, session, seed_name, parallel=False):
+        log.info('running voxel-wise correlation, roi={}, session={}' \
+                  .format(seed_name, session.id))
 
-            # timecourse file
-            ts_file = session.get_ts_file(seed_name)
+        # timecourse file
+        ts_file = session.get_ts_file(seed_name)
 
-            # output volume
-            out_file = os.path.join(self.dir_vols,
-                                    '{}_{}_pearson.nii.gz'.format(session.id, seed_name))
+        # output volume
+        out_file = os.path.join(self.dir_vols,
+                                '{}_{}_pearson.nii.gz'.format(session.id, seed_name))
 
-            cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
-                      .format(output = out_file,
-                              mask   = mri_brain_mask,
-                              file3d = session.bold,
-                              ts     = ts_file)
-            # run
-            run_cmd(cmd)
+        cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
+                  .format(output = out_file,
+                          mask   = mri_brain_mask,
+                          file3d = session.bold,
+                          ts     = ts_file)
+        # run
+        run_cmd(cmd)
 
-            # results
-            session.set_rmap_file(seed_name, out_file)
+        # results
+        session.set_rmap_file(seed_name, out_file)
 
-            # normalize result map
-            self.volume_r2z(session, seed_name, out_file)
+        # normalize result map
+        self.volume_r2z(session, seed_name, out_file)
 
-            ### graphics ###
-            log.info('Generating snapshot image for results, roi={}, session={}'.format(seed_name, session.id))
-            snap_img = os.path.join(self.dir_imgs,
-                                    '{}_{}_pearson_z_snapshot.png'.format(session.id, seed_name))
-            snapshot_overlay(mri_standard, out_file, snap_img)
+        ### graphics ###
+        log.info('Generating snapshot image for results, roi={}, session={}'.format(seed_name, session.id))
+        snap_img = os.path.join(self.dir_imgs,
+                                '{}_{}_pearson_z_snapshot.png'.format(session.id, seed_name))
+        snapshot_overlay(mri_standard, out_file, snap_img)
 
 
     def fc_voxelwise_groupstats(self):
@@ -377,11 +397,11 @@ class FCProject(object):
             log.info('Generating snapshot image for results, roi={}'.format(seed_name))
             snap_img = os.path.join(self.dir_grp_imgs,
                                     '{}_pearson_z_snapshot.png'.format(seed_name))
-            snapshot_overlay(mri_standard, outfile, snap_img)
+            snapshot_overlay(mri_standard, outfile, snap_img, vmin=.2, vmax=.7)
 
             # add to report
             self.report_seeds.add_img(seed_name, snap_img,
-                                      'Group mean functional connectivity with {} (z(r) > 0.1)'.format(seed_name))
+                                      'Group mean functional connectivity with {} (z(r) > 0.2)'.format(seed_name))
 
 
     def generate_report(self):
