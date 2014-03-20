@@ -16,13 +16,18 @@ def run_cmd(cmdstr):
                      stdout = sub.PIPE,
                      stderr = sub.STDOUT)
 
-    # push output to debug log
-    for line in proc.stdout:
-        log.debug('CMD OUT: {}'.format(line.strip()))
-
     # for now, we will just block all processes
-    proc.wait()
+    stdout,_ = proc.communicate()
+
+    # push output to debug log
+    for line in stdout.split('\n'):
+        log.debug('CMD OUT: {}'.format(line.strip()))
 
     if proc.poll():
         log.error('command returned error: \"{}\"'.format(cmdstr))
         sys.exit()
+
+    # return stdout string
+    return stdout
+
+
