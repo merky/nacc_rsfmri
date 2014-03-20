@@ -119,7 +119,7 @@ def plot_network_graph(G,
     return fig
 
 
-def snapshot_overlay(underlay, overlay, out_file, vmin=.1, vmax=.5, auto_coords=False):
+def snapshot_overlay(underlay, overlay, out_file, vmin=.2, vmax=.7, auto_coords=False):
     # first, generate a combined volume (overlay and underlay)
     tmp_vol = tempfile.mktemp(suffix='.nii.gz')
     cmd = 'overlay 0 0 {underlay} -a {overlay} {vmin} {vmax} {output}' \
