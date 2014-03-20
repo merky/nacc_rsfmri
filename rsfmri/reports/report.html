@@ -1,0 +1,28 @@
+<html>
+<head>
+    <!-- Latest compiled and minified CSS -->
+    <link rel="stylesheet" href="http://netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css">
+
+    <!-- Optional theme -->
+    <link rel="stylesheet" href="http://netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap-theme.min.css">
+
+    <title>FC: {{ label }}</title>
+</head>
+<body>
+<div class="container">
+
+    <h1>RS-FCMRI REPORT: {{ label }}</h1>
+    <hr>
+
+    {% for report in reports %}
+        {{ report }}
+    {% endfor %}
+
+
+</div>
+
+<!-- Latest compiled and minified JavaScript -->
+<script src="http://netdna.bootstrapcdn.com/bootstrap/3.1.1/js/bootstrap.min.js"></script>
+
+</body>
+</html>

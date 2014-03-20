@@ -13,6 +13,7 @@ from shutil import copyfile
 from settings import *
 from graphics import *
 from utils    import run_cmd
+from reports  import *
 
 ##########################
 # functional connectivity
@@ -21,7 +22,6 @@ from utils    import run_cmd
 class FCProject(object):
     seeds = {}
     results = {}
-    report = {'seeds':{}, 'group':{}}
 
     def __init__(self, label, output_dir, input_dir, sessions):
         # define directories
@@ -45,6 +45,15 @@ class FCProject(object):
         self.sessions = sessions
         self.label    = label
 
+        # main report
+        self.report = FCReport(label)
+        self.report_summary = FCReportGroupSummary()
+        self.report_seeds = FCReportGroupSeeds()
+
+        # add report groups to main report
+        self.report.add_report(self.report_summary)
+        self.report.add_report(self.report_seeds)
+
 
     def setup(self):
         # user-called initiation.
@@ -57,8 +66,6 @@ class FCProject(object):
 
         # setup sessions
         self.init_sessions()
-
-        # TODO: copy over existing seed files into results dir
 
 
     def init_dirs(self): # create directories
@@ -138,10 +145,22 @@ class FCProject(object):
         run_cmd(cmd)
         self.add_seed(name, filename)
 
+        # add coordinates to report
+        self.report_seeds.add_txt(name, 'Spherical ROI created at coordinates = MNI ({},{},{}), radius = {}mm' \
+                                         .format(x, y, z, radius))
+
 
     def create_seed_from_file(self, list_file, radius=None):
-        # line format in file should be: name, x, y, z, [radius]
-        # * note: radius is optional
+        # creates spherical ROIs from x,y,z coordinates in file
+        #  * each line should be: name, x, y, z, radius
+        #  * radius is optional
+
+        # check if file exists
+        if not os.path.isfile(list_file):
+            log.error('cannot find seed coord file: {}'.format(filename))
+            self.exit()
+
+        # open the file up and loop through each row
         f = open(list_file, 'r')
         try:
             for i, entry in enumerate(f):
@@ -149,19 +168,26 @@ class FCProject(object):
                 if len(fields) < 4:
                     log.warning('line #{} in seed file does not contain enough information, skipping.'.format(i+1))
                     continue
-                n,x,y,z = fields[0:4]
 
+                # name is first field
+                n = fields[0]
                 # replace spaces with underscore
                 n = re.sub(' ','_',n).lower()
+
+                # following 3 fields are coords, convert to float
+                x,y,z = [float(j) for j in fields[1:4]]
 
                 # radius is optional, so we need to check that it was specified somewhere
                 if radius is None:
                     if len(fields) == 5:
-                        radius = fields[5]
+                        radius = float(fields[5])
                     else:
                         log.error('When creating seed from a file, you must specify the radius in the file itself or on the command line')
                         self.exit()
                 self.create_seed(n,x,y,z, radius)
+        except:
+            info.error('Problem import seed coordinates from file {}'.format(lsit_file))
+            self.exit()
         finally:
             f.close()
 
@@ -179,6 +205,16 @@ class FCProject(object):
 
         self.seeds[name] = seedfile
 
+        # snapshot of seed
+        snap_img = os.path.join(self.dir_seeds, 'seed_{}.png'.format(name))
+        snapshot_overlay(mri_standard, filename, snap_img, auto_coords=True)
+
+        # add volume information to report
+        self.report_seeds.add_txt(name, 'File location: {}'.format(filename))
+
+        # add image to report
+        self.report_seeds.add_img(name, snap_img, 'Snapshot of {} seed'.format(name))
+
 
     def add_seed_from_file(list_file):
         # line format in file should be: name, file_location
@@ -191,42 +227,43 @@ class FCProject(object):
 
 
     def extract_ts_all(self):
-        for session in self.sessions:
-            self.extract_ts(session)
 
-
-    def extract_ts(self, session):
         if len(self.seeds) == 0:
             log.error('No seeds specified to extract timecourse, my friend')
             self.exit()
 
-        for seed_name, seed_file in self.seeds.iteritems():
-            log.info('extracting timecourse signal, roi={}, session={}' \
-                      .format(seed_name, session.id))
+        for session in self.sessions:
+            for seed_name in self.seeds:
+                f = self.extract_ts(session, seed_name)
+                session.set_ts_file(seed_name, f)
 
-            # timecourse will be saved to this file
-            ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session.id, seed_name))
 
-            # command string
-            cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
-                    .format(bold   = session.bold,
-                            mask   = seed_file,
-                            output = ts_file)
+    def extract_ts(self, session, seed_name):
 
-            run_cmd(cmd)
+        log.info('extracting timecourse signal, roi={}, session={}' \
+                  .format(seed_name, session.id))
 
-            # track files
-            session.set_ts_file(seed_name, ts_file)
+        seed_file = self.seeds[seed_name]
+
+        # timecourse will be saved to this file
+        ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session.id, seed_name))
+
+        # command string
+        cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
+                .format(bold   = session.bold,
+                        mask   = seed_file,
+                        output = ts_file)
+        # run!
+        run_cmd(cmd)
+
+        # return new file location
+        return ts_file
 
 
     def fc_matrix_groupstats(self):
         # find mean/std across all matrices
         pearson_all = pd.Panel({s.id:s.fcmatrix() for s in self.sessions})
         pearson_mean = pearson_all.mean(axis='items')
-        #pearson_std  = pearson_all.stdev(axis='items')
-
-        # TODO: run t-test
-        # TODO: html summary???
 
         # output csv (mean)
         outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_group_mean.csv')
@@ -256,7 +293,7 @@ class FCProject(object):
         plt.savefig(outfile)
 
         # add to report
-        self.add_to_group_report(outfile, 'Heatmap of Functional Connectivity')
+        self.report_summary.add_img(outfile, 'Heatmap of Functional Connectivity')
 
         ### network graph ####
 
@@ -273,7 +310,7 @@ class FCProject(object):
         plt.savefig(outfile)
 
         # add to report
-        self.add_to_group_report(outfile, 'Network Graph (thresh >= {})'.format(thresh))
+        self.report_summary.add_img(outfile, 'Network Graph (thresh >= {})'.format(thresh))
 
 
     def fc_voxelwise_all(self):
@@ -343,53 +380,24 @@ class FCProject(object):
             snapshot_overlay(mri_standard, outfile, snap_img)
 
             # add to report
-            self.add_to_seed_report(snap_img, seed_name)
-
-
-
-    def add_to_seed_report(self, img, seed):
-        self.report['seeds'][seed] = img
-
-    def add_to_group_report(self, img, desc):
-        self.report['group'][desc] = img
+            self.report_seeds.add_img(seed_name, snap_img,
+                                      'Group mean functional connectivity with {} (z(r) > 0.1)'.format(seed_name))
 
 
     def generate_report(self):
-        # add header, title, etc.
-        html  = '<html><head><title>FC-RSFMRI: {}</title></head>'.format(self.label)
-        html += '<body><h2>Functional Connectivity Results: {}</h2>'.format(self.label)
-
-        # loop through all generic group results
-        for desc,img in self.report['group'].iteritems():
-            html += '<h3>{}</h3>'.format(desc)
-            # add image for seed
-            src = os.path.relpath(img, start=self.dir_group)
-            html += '<a href={}><img src=\'{}\' border=0 height=300 /></a><br />'.format(src,src)
-
-        # loop through all seed-specific results
-        for seed,img in self.report['seeds'].iteritems():
-            html += '<h3>Seed: {}</h3>'.format(seed)
-            # add image for seed
-            src = os.path.relpath(img, start=self.dir_group)
-            html += '<a href={}><img src=\'{}\' border=0 height=300 /></a><br />'.format(src,src)
-
-        html += '</body></html>'
 
         # write to file
         log.info('Generating report...')
         report_file = os.path.join(self.dir_group, 'report.html')
-        with open(report_file, 'w') as f: f.write(html)
+        self.report.render_to_file(report_file)
 
         log.info('*********************************************')
         log.info('* report: {}'.format(report_file))
         log.info('*********************************************')
 
 
-
-
     def volume_r2z(self, session, seed_name, infile):
         log.info('converting r-map to z-map, roi={}, session={}'.format(seed_name, session.id))
-
         outfile = re.sub('.nii.gz$', '_z.nii.gz', infile)
 
         cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \

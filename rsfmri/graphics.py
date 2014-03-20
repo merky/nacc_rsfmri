@@ -119,23 +119,50 @@ def plot_network_graph(G,
     return fig
 
 
-def snapshot_overlay(underlay, overlay, out_file, min=.1, max=.5):
+def snapshot_overlay(underlay, overlay, out_file, vmin=.1, vmax=.5, auto_coords=False):
     # first, generate a combined volume (overlay and underlay)
     tmp_vol = tempfile.mktemp(suffix='.nii.gz')
-    cmd = 'overlay 0 1 {underlay} -a {overlay} {min} {max} {output}' \
+    cmd = 'overlay 0 0 {underlay} -a {overlay} {vmin} {vmax} {output}' \
             .format( underlay = underlay,
                      overlay  = overlay,
-                     min      = min,
-                     max      = max,
+                     vmin      = vmin,
+                     vmax      = vmax,
                      output   = tmp_vol)
     run_cmd(cmd)
 
-    # take axial, sagittal, coronal views
-    tmp_img = tempfile.mktemp(suffix='.png')
-    cmd='slicer {input} -a {output} -t'.format(input=tmp_vol, output=tmp_img)
-    run_cmd(cmd)
+    # second, produce snapshot from combined volume
+    if auto_coords:
+        # find slice positions based on center-of-gravity of volume
+        cmd = 'fslstats {} -C'.format(overlay)
+        sx,sy,sz = [int(float(x)) for x in run_cmd(cmd).strip().split(' ')]
+
+        # temp image for each direction
+        tmp_x,tmp_y,tmp_z = [tempfile.mktemp(suffix='.png') for x in range(3)]
+
+        # produce images
+        cmd='slicer {input} -x -{x} {tx} -y -{y} {ty} -z -{z} {tz} -t' \
+                .format(input = tmp_vol,
+                        x     = sx,
+                        tx    = tmp_x,
+                        y     = sy,
+                        ty    = tmp_y,
+                        z     = sz,
+                        tz    = tmp_z)
+        run_cmd(cmd)
+
+        # combine views into single image
+        tmp_img = tempfile.mktemp(suffix='.png')
+        cmd='montage -tile 3x1 -geometry +0+0 {} {} {} {}'.format(tmp_x,tmp_y,tmp_z, tmp_img)
+        run_cmd(cmd)
+
+    else:
+        # take axial, sagittal, coronal views at center slice
+        tmp_img = tempfile.mktemp(suffix='.png')
+        cmd = 'slicer {input} -a {output} -t'.format(input=tmp_vol, output=tmp_img)
+        run_cmd(cmd)
 
     # scale the image (default is too small)
     cmd='convert {input} -scale 300% -trim {output}'.format(input=tmp_img, output=out_file)
     run_cmd(cmd)
+
 

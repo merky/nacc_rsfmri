@@ -1,0 +1,31 @@
+<h2>{{ label }}</h2>
+<hr>
+{% for seed, items in seeds.iteritems() %}
+    <div class="panel panel-default">
+        <div class="panel-heading">
+            <h3 class="panel-title">Seed: {{ seed }}</h3>
+        </div>
+        <div class="panel-body">
+
+        {% for item in items if item.type=='text' %}
+            <p>{{ item.text }}</p>
+        {% endfor %}
+
+        {% for item in items if item.type=='image' %}
+        <div class="row">
+            <div class="col-md-12">
+                <div class="thumbnail">
+                    <a href='{{ item.src }}'><img src='{{ item.src }}' border=0 height=200 /></a>
+                    <div class="caption">
+                        <p class="text-center">{{ item.label }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+
+        </div>
+    </div>
+
+{% endfor %}
+

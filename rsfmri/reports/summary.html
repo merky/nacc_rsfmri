@@ -1,0 +1,25 @@
+<h2>{{ label }}</h2>
+<hr>
+
+{% for item in items if item.type=='text' %}
+    <p>{{ item.text }}</p>
+{% endfor %}
+
+
+<div class="container-fluid">
+    <div class="row">
+
+    {% for item in items if item.type=='image' %}
+        <div class="col-md-6">
+            <div class="thumbnail">
+                <a href='{{ item.src }}'><img src='{{ item.src }}' border=0 height=300 /></a>
+                <div class="caption">
+                    <p class="text-center">{{ item.label }}</p>
+                </div>
+            </div>
+        </div>
+    {% endfor %}
+
+    </div>
+</div>
+
