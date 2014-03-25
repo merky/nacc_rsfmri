@@ -34,7 +34,7 @@ if __name__ == '__main__':
     analysis = FCProject(args.label, args.output, args.sessdir, sessions)
 
     # overwrite output directory if specified
-    if args.overwrite:
+    if args.overwrite and os.path.isdir(analysis.dir_output):
         log.info('*********************************************')
         log.info('*** WARNING: overwriting existing results! **')
         log.info('*********************************************')
@@ -45,33 +45,37 @@ if __name__ == '__main__':
 
     # create seeds from coords, if necessary
     if args.seed is not None:
+        log.info('Creating seeds...')
         for name, x, y, z in args.seed:
-            analysis.create_seed(name,x,y,z,args.radius)
+            seed = FCSeed(analysis, name)
+            seed.create(x,y,z,args.radius)
+            analysis.add_seed(seed)
+
     if args.coordlist is not None:
-        analysis.create_seed_from_file(args.coordlist, args.radius)
+        analysis.create_seeds_from_file(args.coordlist, args.radius)
 
     # add seeds from files
     if args.seedvol is not None:
         for name, vol in args.seedvol:
-            analysis.add_seed(name,seedvol)
+            seed = FCSeed(analysis, name, seedvol)
     if args.seedlist is not None:
-        analysis.add_seed_from_file(args.seedlist)
+        analysis.add_seeds_from_file(args.seedlist)
 
     # extract timecourse signal
-    analysis.extract_ts_all()
+    analysis.extract_timecourse()
 
     # 1st level stats
     if args.voxelwise:
-        analysis.fc_voxelwise_all()
+        analysis.fc_voxelwise()
 
-    # no need to make 1st level matrices
-    #if args.matrix:
-    #    analysis.fc_matrix_all()
+    # normalize individual maps
+    if args.voxelwise:
+        analysis.fc_voxelwise_fisherz()
 
     # 2nd level stats
     if args.group_stats:
         if args.voxelwise:
-            analysis.fc_voxelwise_groupstats()
+            analysis.fc_voxelwise_all_groupstats()
         if args.matrix:
             analysis.fc_matrix_groupstats()
 

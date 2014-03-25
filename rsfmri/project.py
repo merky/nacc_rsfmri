@@ -12,17 +12,120 @@ from shutil import copyfile
 # our files
 from settings import *
 from graphics import *
-from utils    import run_cmd, run_cmd_parallel
+from utils    import run_cmd, run_cmd_parallel, wait_for_tasks, reset_tasks, task_pool
 from reports  import *
 
-##########################
-# functional connectivity
-##########################
+
+#########################################
+# 1st-level analysis
+#########################################
+# TODO: started, but need to finish this
+
+class FCSeedAnalysis(object):
+    def __init__(self, project, session, seed):
+        self.project   = project
+        self.session   = session
+        self.seed      = seed
+
+        # ts
+        fname = '{}_{}.1d'.format(self.session.id, self.seed.name)
+        self.file_ts = os.path.join(self.project.dir_ts, fname)
+
+        # rmap
+        fname = '{}_{}_pearson.nii.gz'.format(self.session.id, self.seed.name)
+        self.file_rmap = os.path.join(self.project.dir_vols, fname)
+
+        # zmap
+        fname = '{}_{}_pearson_z.nii.gz'.format(self.session.id, self.seed.name)
+        self.file_zmap = os.path.join(self.project.dir_vols, fname)
+
+        # zmap snapshot
+        fname = '{}_{}_pearson_z_snapshot.png'.format(session.id, self.seed.name)
+        self.file_zmap_snapshot = os.path.join(self.project.dir_imgs, fname)
+
+        # add self to session
+        self.session.add_stats(self)
+
+    def extract_ts(self):
+        # command string
+        cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
+                .format(bold   = self.session.bold,
+                        mask   = self.seed.file,
+                        output = self.file_ts)
+
+        # returns threadpool.apply_async object
+        return run_cmd_parallel(cmd)
+
+    def fc_voxelwise(self):
+        cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
+                  .format(output = self.file_rmap,
+                          mask   = mri_brain_mask,
+                          file3d = self.session.bold,
+                          ts     = self.file_ts)
+        # returns threadpool.apply_async object
+        return run_cmd_parallel(cmd)
+
+    def fc_voxelwise_fisherz(self):
+        cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \
+               .format(input=self.file_rmap, output=self.file_zmap)
+
+        # returns threadpool.apply_async object
+        return run_cmd_parallel(cmd)
+
+    def snapshot_z(self):
+        snapshot_overlay(mri_standard, self.file_zmap, self.file_zmap_snapshot)
+
+    def run(self):
+        # This runs all steps (blocking)
+        #self.extract_ts()
+        #self.fc_voxelwise()
+        #self.fc_voxelwise_fisherz()
+        #self.snapshot_z()
+        pass
+
+
+class FCSeed(object):
+    def __init__(self, project, name, file=None):
+        self.name          = name
+        self.project       = project
+        self.dir           = self.project.dir_seeds
+        self.file_snapshot = os.path.join(self.dir, 'seed_{}.png'.format(self.name))
+        self.file          = file
+
+
+        if self.file is not None: self.set(file)
+
+    def create(self, x, y, z, radius):
+        self.file = os.path.join(self.dir, '%s_%dmm.nii.gz' % (self.name, radius,))
+        cmd = '3dUndump -prefix {ofile} -xyz -orient LPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
+                .format(ofile = self.file,
+                        std   = mri_standard,
+                        rad   = radius,
+                        x     = x,
+                        y     = y,
+                        z     = z)
+
+        run_cmd(cmd) # blocking
+
+    def take_snapshot(self):
+        snapshot_overlay(mri_standard, self.file, self.file_snapshot, auto_coords=True)
+
+    def set(self, file):
+        seed_file = os.path.join(self.dir, os.path.basename(file))
+        if seed_file != file:
+            # copy seed file over to project directory, if needed
+            log.info('copying seed file into project: {}'.format(file))
+            copyfile(file, seed_file)
+
+        # update
+        self.file = seed_file
+
+
+#########################################
+# functional connectivity project
+#########################################
 
 class FCProject(object):
-    seeds = {}
-    results = {}
-
     def __init__(self, label, output_dir, input_dir, sessions):
         # define directories
         self.dir_input    = os.path.abspath(input_dir)
@@ -44,6 +147,8 @@ class FCProject(object):
 
         self.sessions = sessions
         self.label    = label
+        self.seeds = []
+        self.seed_stats = []
 
         # main report
         self.report = FCReport(label)
@@ -126,31 +231,24 @@ class FCProject(object):
         f.close()
 
 
+    def add_seed(self, seed):
+        self.seeds.append(seed)
 
+        # create analysis procedures for seed
+        for session in self.sessions:
+            self.seed_stats.append( FCSeedAnalysis(self, session, seed) )
 
-    def create_seed(self, name, x, y, z, radius):
-        log.info('creating seed, {} @ {} {} {}'.format(name,x,y,z))
+        # report (snapshots of seed volume)
+        snap_img = os.path.join(self.dir_seeds,
+                                '{}_snapshot.png'.format(seed.name))
+        # produce image
+        snapshot_overlay(mri_standard, seed.file, snap_img, vmin=.5, vmax=1.2, auto_coords=True)
 
-        # NOTE: I'm confused as to why I have to specify 'LPI' orientation here
-        #       when the MNI standard brain is in LAS. AFNI is wacky?
-        filename = os.path.join(self.dir_seeds, '%s_%dmm.nii.gz' % (name, radius,))
-        cmd = '3dUndump -prefix {ofile} -xyz -orient LPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
-                .format(ofile = filename,
-                        std   = mri_standard,
-                        rad   = radius,
-                        x     = x,
-                        y     = y,
-                        z     = z)
+        # add image to report
+        self.report_seeds.add_img(seed.name, snap_img,
+                                  'Seed volume, file='.format(seed.file))
 
-        run_cmd(cmd)
-        self.add_seed(name, filename)
-
-        # add coordinates to report
-        self.report_seeds.add_txt(name, 'Spherical ROI created at coordinates = MNI ({},{},{}), radius = {}mm' \
-                                         .format(x, y, z, radius))
-
-
-    def create_seed_from_file(self, list_file, radius=None):
+    def create_seeds_from_file(self, list_file, radius=None):
         # creates spherical ROIs from x,y,z coordinates in file
         #  * each line should be: name, x, y, z, radius
         #  * radius is optional
@@ -168,15 +266,12 @@ class FCProject(object):
                 if len(fields) < 4:
                     log.warning('line #{} in seed file does not contain enough information, skipping.'.format(i+1))
                     continue
-
                 # name is first field
                 n = fields[0]
                 # replace spaces with underscore
                 n = re.sub(' ','_',n).lower()
-
                 # following 3 fields are coords, convert to float
                 x,y,z = [float(j) for j in fields[1:4]]
-
                 # radius is optional, so we need to check that it was specified somewhere
                 if radius is None:
                     if len(fields) == 5:
@@ -184,100 +279,34 @@ class FCProject(object):
                     else:
                         log.error('When creating seed from a file, you must specify the radius in the file itself or on the command line')
                         self.exit()
-                self.create_seed(n,x,y,z, radius)
+
+                # create seed
+                seed = FCSeed(self, n)
+                seed.create(x,y,z,radius)
+                self.add_seed(seed)
         except:
-            info.error('Problem import seed coordinates from file {}'.format(lsit_file))
+            log.error('Problem importing seed coordinates from file {}'.format(list_file))
             self.exit()
         finally:
             f.close()
 
-
-    def add_seed(self, name, filename):
-        if not os.path.isfile(filename):
-            log.error('cannot find seed file: {}'.format(filename))
-            self.exit()
-
-        # copy seed file over to project, if needed
-        seedfile = os.path.join(self.dir_seeds, os.path.basename(filename))
-        if seedfile != filename:
-            log.info('copying seed file into project: {}'.format(filename))
-            copyfile(filename, seedfile)
-
-        self.seeds[name] = seedfile
-
-        # snapshot of seed
-        snap_img = os.path.join(self.dir_seeds, 'seed_{}.png'.format(name))
-        snapshot_overlay(mri_standard, filename, snap_img, auto_coords=True)
-
-        # add volume information to report
-        self.report_seeds.add_txt(name, 'File location: {}'.format(filename))
-
-        # add image to report
-        self.report_seeds.add_img(name, snap_img, 'Snapshot of {} seed'.format(name))
-
-
-    def add_seed_from_file(list_file):
+    def add_seeds_from_file(list_file):
         # line format in file should be: name, file_location
         f = open(list_file)
         for entry in f:
             fields = entry.split(',')
             if len(fields) > 1:
                 name,filename = fields
-                self.add_seed(name, filename)
+                seed = FCSeed(self, name, filename)
+                self.add_seed(seed)
 
 
-    def extract_ts_all(self, parallel=False):
-
-        if len(self.seeds) == 0:
-            log.error('No seeds specified to extract timecourse, my friend')
-            self.exit()
-
-        threads = []
-        for session in self.sessions:
-            for seed_name in self.seeds:
-                thread,ts_file = self.extract_ts(session, seed_name, parallel=parallel)
-                threads.append({'session': session,
-                                'seed':    seed_name,
-                                'thread':  thread,
-                                'file':    ts_file
-                                })
-
-        if parallel:
-            log.info('Waiting for extraction jobs...')
-            for x in threads:
-                x['thread'].wait()
-                x['session'].set_ts_file(x['seed'], x['file'])
-
-        del threads
-
-
-    def extract_ts(self, session, seed_name, parallel=False):
-
-        log.info('extracting timecourse signal, roi={}, session={}' \
-                  .format(seed_name, session.id))
-
-        seed_file = self.seeds[seed_name]
-
-        # timecourse will be saved to this file
-        ts_file = os.path.join(self.dir_ts, '{}_{}.1d'.format(session.id, seed_name))
-
-        # command string
-        cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
-                .format(bold   = session.bold,
-                        mask   = seed_file,
-                        output = ts_file)
-        # run!
-        if parallel:
-            # run, return thread (via threadpool)
-            t = run_cmd_parallel(cmd)
-            return (t, ts_file)
-        else:
-            # run (blocking)
-            run_cmd(cmd)
-            # add timecourse file to session instance
-            session.set_ts_file(seed_name, ts_file)
-            # return resulting file
-            return (None, ts_file)
+    def extract_timecourse(self):
+        log.info('Extracting timecourse signal')
+        reset_tasks()
+        for stats in self.seed_stats:
+            stats.extract_ts()
+        wait_for_tasks()
 
 
     def fc_matrix_groupstats(self):
@@ -292,8 +321,8 @@ class FCProject(object):
         # output csv per seed
         for seed in self.seeds:
             # file will contain row-per-session, and columns will be target seeds
-            outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_{}.csv'.format(seed))
-            pearson_all.major_xs(seed).T.to_csv(outfile)
+            outfile = os.path.join(self.dir_grp_csv, 'fc_pearson_{}.csv'.format(seed.name))
+            pearson_all.major_xs(seed.name).T.to_csv(outfile)
 
         ################
         ### GRAPHICS ###
@@ -333,75 +362,58 @@ class FCProject(object):
         self.report_summary.add_img(outfile, 'Network Graph (thresh >= {})'.format(thresh))
 
 
-    def fc_voxelwise_all(self, parallel=False):
-        for session in self.sessions:
-            for seed_name in self.seeds:
-                self.fc_voxelwise(session, seed_name)
+    def fc_voxelwise(self):
+        log.info('Producing voxelwise connectivity maps...')
+        reset_tasks()
+        for stats in self.seed_stats:
+            stats.fc_voxelwise()
+        wait_for_tasks()
 
 
-    def fc_voxelwise(self, session, seed_name, parallel=False):
-        log.info('running voxel-wise correlation, roi={}, session={}' \
-                  .format(seed_name, session.id))
+    def fc_voxelwise_fisherz(self):
+        log.info('Applying Fisher\'s r-to-Z...')
+        reset_tasks()
+        for stats in self.seed_stats:
+            stats.fc_voxelwise_fisherz()
+        wait_for_tasks()
 
-        # timecourse file
-        ts_file = session.get_ts_file(seed_name)
+    def fc_voxelwise_all_groupstats(self):
+        pool = reset_tasks()
+        for seed in self.seeds:
+            log.info('Running voxelwise group-level stats for {}'.format(seed.name))
+            pool.apply_async(self.fc_voxelwise_groupstats, (seed,))
+        wait_for_tasks()
 
-        # output volume
-        out_file = os.path.join(self.dir_vols,
-                                '{}_{}_pearson.nii.gz'.format(session.id, seed_name))
+    def fc_voxelwise_groupstats(self, seed):
+        zmaps = [s.file_zmap for s in self.seed_stats if s.seed == seed]
+        zmaps_str = ' '.join(zmaps)
 
-        cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
-                  .format(output = out_file,
-                          mask   = mri_brain_mask,
-                          file3d = session.bold,
-                          ts     = ts_file)
-        # run
+        # concatenate vols to temp file
+        tmp = tempfile.mktemp(suffix='.nii.gz')
+        cmd = "fslmerge -t {} {}".format(tmp, zmaps_str)
         run_cmd(cmd)
 
-        # results
-        session.set_rmap_file(seed_name, out_file)
+        # run t-test
+        log.info('running group t-test on z-maps, roi={}'.format(seed.name))
+        outbase = os.path.join(self.dir_grp_vols, '{}'.format(seed.name))
+        cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
+        run_cmd(cmd)
 
-        # normalize result map
-        self.volume_r2z(session, seed_name, out_file)
+        # calculate mean z-map
+        log.info('creating group mean z-map, roi={}'.format(seed.name))
+        outfile = os.path.join(self.dir_grp_vols, '{}_z_mean.nii.gz'.format(seed.name))
+        cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
+        run_cmd(cmd)
 
         ### graphics ###
-        log.info('Generating snapshot image for results, roi={}, session={}'.format(seed_name, session.id))
-        snap_img = os.path.join(self.dir_imgs,
-                                '{}_{}_pearson_z_snapshot.png'.format(session.id, seed_name))
-        snapshot_overlay(mri_standard, out_file, snap_img)
+        log.info('Generating snapshot image for results, roi={}'.format(seed.name))
+        snap_img = os.path.join(self.dir_grp_imgs,
+                                '{}_pearson_z_snapshot.png'.format(seed.name))
+        snapshot_overlay(mri_standard, outfile, snap_img, vmin=.2, vmax=.7)
 
-
-    def fc_voxelwise_groupstats(self):
-        for seed_name in self.seeds:
-            zmaps = [s.get_zmap_file(seed_name) for s in self.sessions]
-            zmaps_str = ' '.join(zmaps)
-
-            # concatenate vols to temp file
-            tmp = tempfile.mktemp(suffix='.nii.gz')
-            cmd = "fslmerge -t {} {}".format(tmp, zmaps_str)
-            run_cmd(cmd)
-
-            # run t-test
-            log.info('running group t-test on z-maps, roi={}'.format(seed_name))
-            outbase = os.path.join(self.dir_grp_vols, '{}'.format(seed_name))
-            cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
-            run_cmd(cmd)
-
-            # calculate mean z-map
-            log.info('creating group mean z-map, roi={}'.format(seed_name))
-            outfile = os.path.join(self.dir_grp_vols, '{}_z_mean.nii.gz'.format(seed_name))
-            cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
-            run_cmd(cmd)
-
-            ### graphics ###
-            log.info('Generating snapshot image for results, roi={}'.format(seed_name))
-            snap_img = os.path.join(self.dir_grp_imgs,
-                                    '{}_pearson_z_snapshot.png'.format(seed_name))
-            snapshot_overlay(mri_standard, outfile, snap_img, vmin=.2, vmax=.7)
-
-            # add to report
-            self.report_seeds.add_img(seed_name, snap_img,
-                                      'Group mean functional connectivity with {} (z(r) > 0.2)'.format(seed_name))
+        # add to report
+        self.report_seeds.add_img(seed.name, snap_img,
+                                  'Group mean functional connectivity with {} (z(r) > 0.2)'.format(seed.name))
 
 
     def generate_report(self):
@@ -414,18 +426,6 @@ class FCProject(object):
         log.info('*********************************************')
         log.info('* report: {}'.format(report_file))
         log.info('*********************************************')
-
-
-    def volume_r2z(self, session, seed_name, infile):
-        log.info('converting r-map to z-map, roi={}, session={}'.format(seed_name, session.id))
-        outfile = re.sub('.nii.gz$', '_z.nii.gz', infile)
-
-        cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \
-               .format(input = infile, output = outfile)
-
-        run_cmd(cmd)
-
-        session.set_zmap_file(seed_name, outfile)
 
 
     def exit(self):

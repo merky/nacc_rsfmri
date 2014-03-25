@@ -7,6 +7,10 @@ from multiprocessing.pool import ThreadPool
 # our imports
 from .settings import *
 
+# our thread pool
+task_pool = ThreadPool()
+
+# run command (blocking)
 def run_cmd(cmdstr):
     log.debug('COMMAND: {}'.format(cmdstr))
 
@@ -31,9 +35,27 @@ def run_cmd(cmdstr):
     # return stdout string
     return stdout
 
+# reset thread pool
+def reset_tasks():
+    global task_pool
+    task_pool = ThreadPool()
+    return task_pool
 
-pool = ThreadPool()
+# run command in thread
 def run_cmd_parallel(cmdstr):
-    t = pool.apply_async(run_cmd, (cmdstr,))
+    t = task_pool.apply_async(run_cmd, (cmdstr,))
     return t
+
+# wait for all current threads to end
+def wait_for_tasks():
+    task_pool.close()
+    task_pool.join()
+
+
+def check_file(self, file_loc):
+    if not os.path.isfile(file_loc):
+        log.error('cannot find file: {}'.format(file_loc))
+        sys.exit()
+
+    return file_loc
 
