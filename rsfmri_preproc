@@ -12,6 +12,7 @@ TR=5.0
 SLICE_ORDER=odd # odd/up/down
 ORIENT=RPI # to match template
 PROCESS_DIR=restproc
+DO_NONLINEAR_REG=false
 
 # not enough args
 if [[ $# -lt 3 ]]; then
@@ -60,12 +61,14 @@ tr=$(mri_info $BOLD |
 [[ $tr -gt 0 ]] && TR=$(echo "scale=2;$tr/1000" | bc)
 
 run_anat_init () {
+    tmpfile=`mktemp --suffix=.nii.gz`
+    scp $ANAT $tmpfile
+    # deoblique
+    3drefit -deoblique $tmpfile
+
     # copy data
     echo " * Copying anatomical data (reorienting to LAS)..."
-    3dresample -orient $ORIENT -inset $ANAT -prefix $d/anat.nii.gz
-
-    # deoblique
-    3drefit -deoblique $d/anat.nii.gz
+    3dresample -orient $ORIENT -inset $tmpfile -prefix $d/anat.nii.gz
 
     #skull strip anat
     echo " * Skull stripping anat"
@@ -90,16 +93,18 @@ run_anat_reg () {
           -interp trilinear \
           -omat $d/reg/anat2standard.affine.mat
 
-    # nonlinear warp, use non skull-stripped anat
-    echo " * Non-linear warp: anat -> standard"
-    fnirt  --ref=$STANDARD \
-           --refmask=$STANDARD_MASK \
-           --in=$d/anat \
-           --iout=$d/anat_atl_warp \
-           --aff=$d/reg/anat2standard.affine.mat \
-           --cout=$d/reg/anat2standard.warp.coef \
-           --interp=spline \
-           --config=$FNIRT_CONF
+    if $DO_NONLINEAR_REG; then
+        # nonlinear warp, use non skull-stripped anat
+        echo " * Non-linear warp: anat -> standard"
+        fnirt  --ref=$STANDARD \
+               --refmask=$STANDARD_MASK \
+               --in=$d/anat \
+               --iout=$d/anat_atl_warp \
+               --aff=$d/reg/anat2standard.affine.mat \
+               --cout=$d/reg/anat2standard.warp.coef \
+               --interp=spline \
+               --config=$FNIRT_CONF
+    fi
 
     echo " * Segmenting T1 (brain)"
     fast -o $d/seg/anat_brain_fast $d/anat_brain
@@ -241,32 +246,34 @@ run_func_reg() {
           -schedule ${FSLDIR}/etc/flirtsch/bbr.sch
 
 
-    echo " * Warping, func (mean mask) -> standard"
-    applywarp   --ref=$STANDARD \
-                 --in=$d/rest_reorient_skip_tc_mc_mean_brain_mask \
-                --out=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl \
-             --premat=$d/reg/func2anat.mat \
-               --warp=$d/reg/anat2standard.warp.coef \
-             --interp=nn \
-               --mask=$STANDARD_MASK_DIL
+    if $DO_NONLINEAR_REG; then
+        echo " * Warping, func (mean mask) -> standard"
+        applywarp   --ref=$STANDARD \
+                     --in=$d/rest_reorient_skip_tc_mc_mean_brain_mask \
+                    --out=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl \
+                 --premat=$d/reg/func2anat.mat \
+                   --warp=$d/reg/anat2standard.warp.coef \
+                 --interp=nn \
+                   --mask=$STANDARD_MASK_DIL
 
-    echo " * Warping, func (4d) -> standard"
-    applywarp   --ref=$STANDARD \
-                 --in=$d/rest_reorient_skip_tc_mc_brain \
-                --out=$d/rest_reorient_skip_tc_mc_brain_atl_warp \
-             --premat=$d/reg/func2anat.mat \
-               --warp=$d/reg/anat2standard.warp.coef \
-             --interp=spline \
-               --mask=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl
+        echo " * Warping, func (4d) -> standard"
+        applywarp   --ref=$STANDARD \
+                     --in=$d/rest_reorient_skip_tc_mc_brain \
+                    --out=$d/rest_reorient_skip_tc_mc_brain_atl_warp \
+                 --premat=$d/reg/func2anat.mat \
+                   --warp=$d/reg/anat2standard.warp.coef \
+                 --interp=spline \
+                   --mask=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl
 
-    echo " * Warping, func (mean) -> standard, for qc"
-    applywarp   --ref=$STANDARD \
-                 --in=$d/rest_reorient_skip_tc_mc_mean_brain \
-                --out=$d/rest_reorient_skip_tc_mc_mean_brain_atl_warp \
-             --premat=$d/reg/func2anat.mat \
-               --warp=$d/reg/anat2standard.warp.coef \
-             --interp=spline \
-               --mask=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl
+        echo " * Warping, func (mean) -> standard, for qc"
+        applywarp   --ref=$STANDARD \
+                     --in=$d/rest_reorient_skip_tc_mc_mean_brain \
+                    --out=$d/rest_reorient_skip_tc_mc_mean_brain_atl_warp \
+                 --premat=$d/reg/func2anat.mat \
+                   --warp=$d/reg/anat2standard.warp.coef \
+                 --interp=spline \
+                   --mask=$d/rest_reorient_skip_tc_mc_mean_brain_mask_atl
+    fi
 
     echo " * Concatenating and inversing xfm matrices"
     # concatenate func -> anat -> standard linear transforms
@@ -373,8 +380,8 @@ wait
 # func registration
 run_func_reg
 
-# smoothing, bandpass, etc.
-run_fcpreproc warp &
+# smoothing, bandpass, 
+$DO_NONLINEAR_REG && run_fcpreproc warp &
 run_fcpreproc affine &
 wait
 
