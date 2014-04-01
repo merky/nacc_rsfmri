@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from itertools import combinations
 
 # our imports
-from utils import run_cmd
+from utils import run_cmd, image_center_of_gravity
 
 #########################################
 # Heatmap
@@ -119,6 +119,9 @@ def plot_network_graph(G,
     return fig
 
 
+
+
+# produce axial, coronal, sagital view of overlay on top of standard
 def snapshot_overlay(underlay, overlay, out_file, vmin=.2, vmax=.7, auto_coords=False):
     # first, generate a combined volume (overlay and underlay)
     tmp_vol = tempfile.mktemp(suffix='.nii.gz')
@@ -132,9 +135,7 @@ def snapshot_overlay(underlay, overlay, out_file, vmin=.2, vmax=.7, auto_coords=
 
     # second, produce snapshot from combined volume
     if auto_coords:
-        # find slice positions based on center-of-gravity of volume
-        cmd = 'fslstats {} -C'.format(overlay)
-        sx,sy,sz = [int(float(x)) for x in run_cmd(cmd).strip().split(' ')]
+        sx,sy,sz = image_center_of_gravity(overlay)
 
         # temp image for each direction
         tmp_x,tmp_y,tmp_z = [tempfile.mktemp(suffix='.png') for x in range(3)]

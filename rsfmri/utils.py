@@ -10,6 +10,7 @@ from .settings import *
 # our thread pool
 task_pool = ThreadPool()
 
+
 # run command (blocking)
 def run_cmd(cmdstr):
     log.debug('COMMAND: {}'.format(cmdstr))
@@ -52,10 +53,27 @@ def wait_for_tasks():
     task_pool.join()
 
 
-def check_file(self, file_loc):
+def check_file(file_loc):
     if not os.path.isfile(file_loc):
         log.error('cannot find file: {}'.format(file_loc))
         sys.exit()
 
     return file_loc
+
+
+##############################
+# imaging specific 
+##############################
+
+# find center of gravity of nifti image
+# (useful for finding snapshot positions)
+def image_center_of_gravity(image):
+    cmd = 'fslstats {} -C'.format(image)
+    return [int(float(x)) for x in run_cmd(cmd).strip().split(' ')]
+
+
+# find nonzero mean
+def imagez_nonzero_mean(image):
+    cmd = 'fslstats {} -M'.format(image)
+    return float(run_cmd(cmd).strip())
 
