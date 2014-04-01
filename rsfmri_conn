@@ -45,7 +45,6 @@ if __name__ == '__main__':
 
     # create seeds from coords, if necessary
     if args.seed is not None:
-        log.info('Creating seeds...')
         for name, x, y, z in args.seed:
             seed = FCSeed(analysis, name)
             seed.create(x,y,z,args.radius)
@@ -79,7 +78,6 @@ if __name__ == '__main__':
         if args.matrix:
             analysis.fc_matrix_groupstats()
 
-    # TODO: snapshots of rois
     analysis.generate_report()
 
     log.info('Completed all steps!')

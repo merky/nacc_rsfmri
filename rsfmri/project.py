@@ -11,8 +11,10 @@ from shutil import copyfile
 
 # our files
 from settings import *
-from graphics import *
-from utils    import run_cmd, run_cmd_parallel, wait_for_tasks, reset_tasks, task_pool
+from graphics import heatmap, generate_network_graph, \
+                     plot_network_graph, snapshot_overlay
+from utils    import run_cmd, reset_tasks, run_cmd_parallel, \
+                     wait_for_tasks, check_file, imagez_nonzero_mean
 from reports  import *
 
 
@@ -47,6 +49,8 @@ class FCSeedAnalysis(object):
         self.session.add_stats(self)
 
     def extract_ts(self):
+        self.debug('Extracting timecourse signal')
+
         # command string
         cmd = 'fslmeants -i {bold} -m {mask} -o {output}' \
                 .format(bold   = self.session.bold,
@@ -57,22 +61,29 @@ class FCSeedAnalysis(object):
         return run_cmd_parallel(cmd)
 
     def fc_voxelwise(self):
+        self.debug('Computing connectivity map')
+
+        # command string
         cmd = "3dTcorr1D -pearson -prefix {output} -mask {mask} {file3d} {ts}" \
                   .format(output = self.file_rmap,
                           mask   = mri_brain_mask,
                           file3d = self.session.bold,
                           ts     = self.file_ts)
-        # returns threadpool.apply_async object
+
         return run_cmd_parallel(cmd)
 
     def fc_voxelwise_fisherz(self):
+        self.debug('Converting R to z map')
+
+        # command string
         cmd = "3dcalc -a {input} -expr 'log((1+a)/(1-a))/2' -prefix {output}" \
                .format(input=self.file_rmap, output=self.file_zmap)
 
-        # returns threadpool.apply_async object
         return run_cmd_parallel(cmd)
 
     def snapshot_z(self):
+        self.debug('Taking snapshot image of z map')
+
         snapshot_overlay(mri_standard, self.file_zmap, self.file_zmap_snapshot)
 
     def run(self):
@@ -83,6 +94,10 @@ class FCSeedAnalysis(object):
         #self.snapshot_z()
         pass
 
+    def debug(self, statement):
+        log.debug('SESSION={}, SEED={}, {}'.format(self.session.id, self.seed.name, statement))
+
+
 
 class FCSeed(object):
     def __init__(self, project, name, file=None):
@@ -92,10 +107,11 @@ class FCSeed(object):
         self.file_snapshot = os.path.join(self.dir, 'seed_{}.png'.format(self.name))
         self.file          = file
 
-
-        if self.file is not None: self.set(file)
+        if self.file is not None: self.set(os.path.abspath(file))
 
     def create(self, x, y, z, radius):
+        log.info('Creating spherical seed NAME={} MNI=({},{},{}) RADIUS={}mm'.format(self.name,x,y,z,radius))
+
         self.file = os.path.join(self.dir, '%s_%dmm.nii.gz' % (self.name, radius,))
         cmd = '3dUndump -prefix {ofile} -xyz -orient LPI -master {std} -srad {rad} <(echo \'{x} {y} {z}\')' \
                 .format(ofile = self.file,
@@ -108,6 +124,8 @@ class FCSeed(object):
         run_cmd(cmd) # blocking
 
     def take_snapshot(self):
+        log.info('Taking snapshot image of seed \'{}\''.format(self.name))
+
         snapshot_overlay(mri_standard, self.file, self.file_snapshot, auto_coords=True)
 
     def set(self, file):
@@ -234,6 +252,13 @@ class FCProject(object):
     def add_seed(self, seed):
         self.seeds.append(seed)
 
+        log.info('Adding seed {} to project...'.format(seed.name))
+
+        # check to see if roi has useful data
+        if imagez_nonzero_mean(seed.file) <= 0:
+            log.error('Seed volume does not contain any values > 1')
+            self.exit()
+
         # create analysis procedures for seed
         for session in self.sessions:
             self.seed_stats.append( FCSeedAnalysis(self, session, seed) )
@@ -246,20 +271,17 @@ class FCProject(object):
 
         # add image to report
         self.report_seeds.add_img(seed.name, snap_img,
-                                  'Seed volume, file='.format(seed.file))
+                                  'Seed volume, file={}'.format(seed.file))
+
 
     def create_seeds_from_file(self, list_file, radius=None):
         # creates spherical ROIs from x,y,z coordinates in file
         #  * each line should be: name, x, y, z, radius
         #  * radius is optional
-
-        # check if file exists
-        if not os.path.isfile(list_file):
-            log.error('cannot find seed coord file: {}'.format(filename))
-            self.exit()
+        log.info('Creating seeds from MNI coords specified in list file: {}'.format(list_file))
 
         # open the file up and loop through each row
-        f = open(list_file, 'r')
+        f = open(check_file(list_file), 'r')
         try:
             for i, entry in enumerate(f):
                 fields  = entry.strip().split(',')
@@ -290,19 +312,26 @@ class FCProject(object):
         finally:
             f.close()
 
-    def add_seeds_from_file(list_file):
+    def add_seeds_from_file(self, list_file):
         # line format in file should be: name, file_location
-        f = open(list_file)
-        for entry in f:
-            fields = entry.split(',')
-            if len(fields) > 1:
-                name,filename = fields
-                seed = FCSeed(self, name, filename)
-                self.add_seed(seed)
+        log.info('Importing seed volumes from file: {}'.format(list_file))
+        f = open(check_file(list_file), 'r')
+        try:
+            for entry in f:
+                fields = entry.strip().split(',')
+                if len(fields) > 1:
+                    name,filename = fields
+                    seed = FCSeed(self, name, filename)
+                    self.add_seed(seed)
+        except:
+            log.error('Problem importing seed volumes from list file {}'.format(list_file))
+            self.exit()
+        finally:
+            f.close()
 
 
     def extract_timecourse(self):
-        log.info('Extracting timecourse signal')
+        log.info('Extracting timecourse signal for all seeds for all users...')
         reset_tasks()
         for stats in self.seed_stats:
             stats.extract_ts()
@@ -363,24 +392,24 @@ class FCProject(object):
 
 
     def fc_voxelwise(self):
-        log.info('Producing voxelwise connectivity maps...')
         reset_tasks()
+        log.info('Producing voxelwise maps for all seeds for all sessions')
         for stats in self.seed_stats:
             stats.fc_voxelwise()
         wait_for_tasks()
 
 
     def fc_voxelwise_fisherz(self):
-        log.info('Applying Fisher\'s r-to-Z...')
         reset_tasks()
+        log.info('Converting r-maps to z-maps for all seeds for all sessions')
         for stats in self.seed_stats:
             stats.fc_voxelwise_fisherz()
         wait_for_tasks()
 
     def fc_voxelwise_all_groupstats(self):
         pool = reset_tasks()
+        log.info('Running group-level stats for all seeds')
         for seed in self.seeds:
-            log.info('Running voxelwise group-level stats for {}'.format(seed.name))
             pool.apply_async(self.fc_voxelwise_groupstats, (seed,))
         wait_for_tasks()
 
@@ -431,3 +460,4 @@ class FCProject(object):
     def exit(self):
         # TODO: clean up anything?
         sys.exit()
+
