@@ -355,9 +355,10 @@ run_fcpreproc () {
 
     # guassian smooth
     echo " * $fbase: Smoothing (${FWHM}mm) functional images"
-    mri_fwhm --smooth-only \
-             --i ${fpath}.nii.gz \
-             --o ${fpath}_fwhm${FWHM}.nii.gz
+    3dmerge -1blur_fwhm $FWHM \
+            -doall \
+            -prefix ${fpath}_fwhm${FWHM}.nii.gz \
+                    ${fpath}.nii.gz
 
     # grand mean scaling
     fslmaths      ${fpath}_fwhm${FWHM} \
