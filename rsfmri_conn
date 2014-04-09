@@ -74,7 +74,7 @@ if __name__ == '__main__':
     # 2nd level stats
     if args.group_stats:
         if args.voxelwise:
-            analysis.fc_voxelwise_all_groupstats()
+            analysis.fc_voxelwise_all_groupstats(ttest=args.ttest)
         if args.matrix:
             analysis.fc_matrix_groupstats()
 

@@ -221,6 +221,10 @@ class FCProject(object):
             os.makedirs(self.dir_grp_csv)
             os.makedirs(self.dir_grp_imgs)
             os.makedirs(self.dir_grp_vols)
+
+            # inside results-group/vols
+            os.makedirs(self.dir_grp_vols_mean)
+            os.makedirs(self.dir_grp_vols_ttest)
         except:
             # if they already exist, big woop!
             pass
@@ -411,14 +415,14 @@ class FCProject(object):
             stats.fc_voxelwise_fisherz()
         wait_for_tasks()
 
-    def fc_voxelwise_all_groupstats(self):
+    def fc_voxelwise_all_groupstats(self, ttest=True):
         pool = reset_tasks()
         log.info('Running group-level stats for all seeds')
         for seed in self.seeds:
-            pool.apply_async(self.fc_voxelwise_groupstats, (seed,))
+            pool.apply_async(self.fc_voxelwise_groupstats, (seed,ttest,))
         wait_for_tasks()
 
-    def fc_voxelwise_groupstats(self, seed):
+    def fc_voxelwise_groupstats(self, seed, ttest=True):
         zmaps = [s.file_zmap for s in self.seed_stats if s.seed == seed]
         zmaps_str = ' '.join(zmaps)
 
@@ -433,12 +437,6 @@ class FCProject(object):
         cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
         run_cmd(cmd)
 
-        # run t-test
-        log.info('running group t-test on z-maps, roi={}'.format(seed.name))
-        outbase = os.path.join(self.dir_grp_vols_ttest, '{}'.format(seed.name))
-        cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
-        run_cmd(cmd)
-
         ### graphics ###
         log.info('Generating snapshot image for results, roi={}'.format(seed.name))
         snap_img = os.path.join(self.dir_grp_imgs,
@@ -448,6 +446,13 @@ class FCProject(object):
         # add to report
         self.report_seeds.add_img(seed.name, snap_img,
                                   'Group mean functional connectivity with {} (z(r) > 0.2)'.format(seed.name))
+
+        # run t-test
+        if ttest:
+            log.info('running group t-test on z-maps, roi={}'.format(seed.name))
+            outbase = os.path.join(self.dir_grp_vols_ttest, '{}'.format(seed.name))
+            cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
+            run_cmd(cmd)
 
 
     def generate_report(self):

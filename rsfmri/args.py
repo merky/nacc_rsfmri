@@ -58,6 +58,8 @@ def parse_args():
                           help="Skip voxelwise correlations; default is to run")
     actgroup.add_argument('--skip-matrix', action='store_false', dest='matrix',
                           help='Skip ROI-ROI correlations, default is to run')
+    actgroup.add_argument('--skip-ttest', action='store_false', dest='ttest',
+                          help="Skip group-level ttests; default is to run")
     actgroup.add_argument('--skip-group-stats', action='store_false', dest='group_stats',
                           help='Skip group-level stats, default is to run')
     actgroup.add_argument('--overwrite', '-W', action='store_true',
