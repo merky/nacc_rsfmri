@@ -28,8 +28,8 @@ def parse_args():
     seedinput = seedgroup.add_mutually_exclusive_group(required=True)
 
     # main
-    maingroup.add_argument('--sessdir', '-d', metavar='path', type=file_input_type,
-                           help='Input directory containing session directories',
+    maingroup.add_argument('--input', '-i', metavar='path', type=file_input_type, dest='sessdir',
+                           help='Input directory containing pre-processed session directories',
                            required=True)
     maingroup.add_argument('--output', '-o', metavar='path', type=file_input_type,
                            help='Output directory (will create child directory with analysis label name)',
@@ -44,13 +44,13 @@ def parse_args():
                            help='File containing list of session IDs (located in input directory)')
 
     # seed(s)
-    seedinput.add_argument('--seed', '--coord', metavar=('name','x','y','z'), nargs=4, action='append',
+    seedinput.add_argument('--coord', metavar=('name','x','y','z'), nargs=4, action='append',
                            help='Specify seed coordinates (x,y,z). Can use multiple times.')
     seedinput.add_argument('--coordlist', metavar='file', type=file_input_type,
                            help='File containing seed coordinates on each line (format: name, x, y, z, [radius])')
-    seedinput.add_argument('--seedlist', metavar='file', type=file_input_type,
+    seedinput.add_argument('--seedlist', metavar='file', type=file_input_type, dest='seedvollist',
                            help='File containing list of seed files on each line (format: name, file_location)')
-    seedinput.add_argument('--seedvol', metavar=('name','file'), action='append', nargs=2,
+    seedinput.add_argument('--seed', metavar=('name','file'), action='append', nargs=2, dest='seedvol',
                            help='Volume file to use as single seed. Can use multiple times.')
 
     # actions
@@ -77,14 +77,14 @@ def parse_args():
 
 
     # let's take a look at the seed argument, if available
-    if getattr(args,'seed') is not None:
+    if getattr(args,'coord') is not None:
         # dependent on radius argument
         if getattr(args,'radius') is None:
             log.error('If coordinate input, must specify radius')
             sys.exit()
 
         # check that seed inputs are of correct type
-        for seed in args.seed:
+        for seed in args.coord:
             try:
                 name,x,y,z = seed
                 seed = [name,float(x),float(y),float(z)]
