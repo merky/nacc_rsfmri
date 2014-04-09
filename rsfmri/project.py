@@ -163,6 +163,11 @@ class FCProject(object):
         self.dir_grp_vols = os.path.join(self.dir_group,  'vols')
         self.dir_grp_imgs = os.path.join(self.dir_group,  'imgs')
 
+        # inside /vols
+        self.dir_grp_vols_mean  = os.path.join(self.dir_grp_vols,  'zmean')
+        self.dir_grp_vols_ttest = os.path.join(self.dir_grp_vols,  'ttest')
+
+        # initialize
         self.sessions = sessions
         self.label    = label
         self.seeds = []
@@ -422,16 +427,16 @@ class FCProject(object):
         cmd = "fslmerge -t {} {}".format(tmp, zmaps_str)
         run_cmd(cmd)
 
-        # run t-test
-        log.info('running group t-test on z-maps, roi={}'.format(seed.name))
-        outbase = os.path.join(self.dir_grp_vols, '{}'.format(seed.name))
-        cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
-        run_cmd(cmd)
-
         # calculate mean z-map
         log.info('creating group mean z-map, roi={}'.format(seed.name))
-        outfile = os.path.join(self.dir_grp_vols, '{}_z_mean.nii.gz'.format(seed.name))
+        outfile = os.path.join(self.dir_grp_vols_mean, '{}_z_mean.nii.gz'.format(seed.name))
         cmd = "fslmaths {} -Tmean {}".format(tmp, outfile)
+        run_cmd(cmd)
+
+        # run t-test
+        log.info('running group t-test on z-maps, roi={}'.format(seed.name))
+        outbase = os.path.join(self.dir_grp_vols_ttest, '{}'.format(seed.name))
+        cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
         run_cmd(cmd)
 
         ### graphics ###
