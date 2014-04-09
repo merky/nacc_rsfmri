@@ -44,8 +44,8 @@ if __name__ == '__main__':
     analysis.setup()
 
     # create seeds from coords, if necessary
-    if args.seed is not None:
-        for name, x, y, z in args.seed:
+    if args.coord is not None:
+        for name, x, y, z in args.coord:
             seed = FCSeed(analysis, name)
             seed.create(x,y,z,args.radius)
             analysis.add_seed(seed)
@@ -57,8 +57,8 @@ if __name__ == '__main__':
     if args.seedvol is not None:
         for name, vol in args.seedvol:
             seed = FCSeed(analysis, name, seedvol)
-    if args.seedlist is not None:
-        analysis.add_seeds_from_file(args.seedlist)
+    if args.seedvollist is not None:
+        analysis.add_seeds_from_file(args.seedvollist)
 
     # extract timecourse signal
     analysis.extract_timecourse()
