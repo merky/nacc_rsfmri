@@ -56,7 +56,8 @@ if __name__ == '__main__':
     # add seeds from files
     if args.seedvol is not None:
         for name, vol in args.seedvol:
-            seed = FCSeed(analysis, name, seedvol)
+            seed = FCSeed(analysis, name, vol)
+            analysis.add_seed(seed)
     if args.seedvollist is not None:
         analysis.add_seeds_from_file(args.seedvollist)
 
