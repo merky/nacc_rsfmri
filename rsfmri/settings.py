@@ -12,7 +12,7 @@ mri_standard   = '{}/data/standard/MNI152_T1_2mm_brain.nii.gz'.format(os.environ
 mri_brain_mask = '{}/data/standard/MNI152_T1_2mm_brain_mask.nii.gz'.format(os.environ['FSLDIR'])
 
 # fwhm
-fwhm = 4
+fwhm = 6
 
 # directory where rsfmri_preproc output is located
 restproc_dir = 'restproc'
