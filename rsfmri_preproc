@@ -5,9 +5,9 @@ set -e
 
 # user settings
 SKIP=4 # drop first N frames
-FWHM=4 # smoothing in mm
+FWHM=6 # smoothing in mm TODO: change back to 4
 BPSS_LO=0.009
-BPSS_HI=0.08 
+BPSS_HI=0.08
 TR=5.0
 SLICE_ORDER=odd # odd/up/down
 ORIENT=RPI # to match template
@@ -46,7 +46,8 @@ STANDARD_MASK_DIL=$templates_dir/MNI152_T1_2mm_brain_mask_dil.nii.gz
 # masks for extracting nuisance signals
 MASK_VENTRICLES=$templates_dir/avg152T1_ventricles_MNI.nii.gz
 MASK_WM=$templates_dir/avg152T1_WM_MNI.nii.gz
-MASK_WHOLEBRAIN=$STANDARD_MASK
+#MASK_WHOLEBRAIN=$STANDARD_MASK
+MASK_WHOLEBRAIN=$templates_dir/avg152T1_brain_MNI.nii.gz
 
 # config
 FLIRT_CONF=$FSL_DIR/etc/flirtsch/sch3Dtrans_3dof
@@ -72,7 +73,8 @@ function get_tr () {
     echo $(echo "scale=2;$tr/1000" | bc)
 }
 
-# initialize anatomy volume
+
+# initialize anatomy volume 
 run_anat_init () {
     tmpfile=`mktemp --suffix=.nii.gz`
     scp $ANAT $tmpfile
@@ -90,43 +92,19 @@ run_anat_init () {
 
 # register anatomy to standard
 run_anat_reg () {
-    #############################################
-    # anatomical registration to standard
-    #############################################
+    standard=$(mktemp --suffix .nii.gz)
 
-    # register anat brain to standard space
-    echo " * Linear transform: anat (brain) -> standard"
-    flirt -in   $d/anat_brain \
-          -out  $d/anat_atl_linear \
-          -ref  $STANDARD_BRAIN \
-          -cost corratio \
-          -dof  12 \
-          -searchrx -90 90 \
-          -searchry -90 90 \
-          -searchrz -90 90 \
-          -interp trilinear \
-          -omat $d/reg/anat2standard.affine.mat
+    # make copy of template volume (ANTs requires)
+    cp $STANDARD_BRAIN.nii.gz $standard
 
-    if $DO_NONLINEAR_REG; then
-        # nonlinear warp, use non skull-stripped anat
-        echo " * Non-linear warp: anat -> standard"
-        fnirt  --ref=$STANDARD \
-               --refmask=$STANDARD_MASK \
-               --in=$d/anat \
-               --iout=$d/anat_atl_warp \
-               --aff=$d/reg/anat2standard.affine.mat \
-               --cout=$d/reg/anat2standard.warp.coef \
-               --interp=spline \
-               --config=$FNIRT_CONF
-    fi
-
-    echo " * Segmenting T1 (brain)"
-    fast -o $d/seg/anat_brain_fast $d/anat_brain
-
-    echo " * Creating binarized white matter mask"
-    fslmaths $d/seg/anat_brain_fast_pve_2 \
-             -thr 0.5 -bin $d/seg/anat_brain_wmseg
+    # normalize anat -> template
+    echo " * Normalizing anat -> standard"
+    antsIntroduction.sh -d 3 \
+                        -i $d/anat_brain.nii.gz \
+                        -r $standard \
+                        -o $d/anat_brain_atl_
 }
+
 
 #############################################
 # copy data, reorient, slice time correction
@@ -218,16 +196,42 @@ run_func_motion () {
 #############################################
 # registration/normalization
 #############################################
-#  input: <filebase> NAME
-# output: <filebase>_brain_atl_affine
+#  input: <filebase>
+# output: <filebase>[_brain]_atl_affine
 #############################################
-run_func_reg() {
+run_func_reg_and_normalize () {
+    fpath=$1
+
+    # coregister func -> anat (using ANTs)
+    echo " * coregistration "
+    rsfmri_coreg 3 \
+                 $d/anat_brain.nii.gz \
+                 ${fpath}_mean_brain.nii.gz \
+                 ${fpath}_mean_brain_2anat_
+
+    # transform func -> template
+    echo " * normalizing anat -> standard "
+    WarpTimeSeriesImageMultiTransform 4 \
+                        ${fpath}_brain.nii.gz \
+                        ${fpath}_brain_atl_affine.nii.gz \
+                        -R $STANDARD_BRAIN.nii.gz \
+                        $d/anat_brain_atl_Affine.txt \
+                        ${fpath}_mean_brain_2anat_Affine.txt
+}
+
+
+#############################################
+# skullstrip (and functional mean)
+#############################################
+#  input: <filebase> NAME
+# output: <filebase>_brain
+#############################################
+run_func_skullstrip() {
     fpath=$1
     fbase=$2
 
-    echo " * $fbase: Creating mean functional image"
-    # create mean functional image
-    fslmaths        $fpath \
+    # create mean of functional
+    fslmaths        ${fpath} \
              -Tmean ${fpath}_mean
 
     echo " * $fbase: Skull stripping mean image"
@@ -265,77 +269,6 @@ run_func_reg() {
     fslmaths      ${fpath} \
              -mas ${fpath}_brain_percmask_dil \
                   ${fpath}_brain
-
-    echo " * $fbase: Initial transform estimate, func (mean brain) -> anat"
-    flirt -in   ${fpath}_mean_brain \
-          -ref  $d/anat_brain \
-          -out  $d/reg/${fbase}.func2anat.init \
-          -omat $d/reg/${fbase}.func2anat.init.mat \
-          -dof  6
-
-    echo " * $fbase: Boundary based registration, func (brain) -> anat"
-    flirt -in       ${fpath}_brain \
-          -ref      $d/anat_brain \
-          -out      $d/reg/${fbase}.func2anat \
-          -omat     $d/reg/${fbase}.func2anat.mat \
-          -wmseg    $d/seg/anat_brain_wmseg \
-          -cost     bbr \
-          -init     $d/reg/${fbase}.func2anat.init.mat \
-          -dof      6 \
-          -schedule ${FSLDIR}/etc/flirtsch/bbr.sch
-
-
-    if $DO_NONLINEAR_REG; then
-        echo " * $fbase: Warping, func (mean mask) -> standard"
-        applywarp   --ref=$STANDARD \
-                     --in=${fpath}_mean_brain_mask \
-                    --out=${fpath}_mean_brain_mask_atl \
-                 --premat=$d/reg/${fbase}.func2anat.mat \
-                   --warp=$d/reg/anat2standard.warp.coef \
-                 --interp=nn \
-                   --mask=$STANDARD_MASK_DIL
-
-        echo " * $fbase: Warping, func (4d) -> standard"
-        applywarp   --ref=$STANDARD \
-                     --in=${fpath}_brain \
-                    --out=${fpath}_brain_atl_warp \
-                 --premat=$d/reg/${fbase}.func2anat.mat \
-                   --warp=$d/reg/anat2standard.warp.coef \
-                 --interp=spline \
-                   --mask=${fpath}_mean_brain_mask_atl
-
-        echo " * $fbase: Warping, func (mean) -> standard, for qc"
-        applywarp   --ref=$STANDARD \
-                     --in=${fpath}_mean_brain \
-                    --out=${fpath}_mean_brain_atl_warp \
-                 --premat=$d/reg/${fbase}.func2anat.mat \
-                   --warp=$d/reg/anat2standard.warp.coef \
-                 --interp=spline \
-                   --mask=${fpath}_mean_brain_mask_atl
-    fi
-
-    echo " * $fbase: Concatenating and inversing xfm matrices"
-    # concatenate func -> anat -> standard linear transforms
-    convert_xfm -omat   $d/reg/${fbase}.func2standard.mat \
-                -concat $d/reg/anat2standard.affine.mat \
-                        $d/reg/${fbase}.func2anat.mat
-
-    # make inverse matrices
-    convert_xfm -omat    $d/reg/${fbase}.standard2func.mat \
-                -inverse $d/reg/${fbase}.func2standard.mat
-    convert_xfm -omat    $d/reg/${fbase}.anat2func.mat \
-                -inverse $d/reg/${fbase}.func2anat.mat
-    convert_xfm -omat    $d/reg/standard2anat.affine.mat \
-                -inverse $d/reg/anat2standard.affine.mat
-
-    # normalize rest using linear transform
-    echo " * $fbase: Applying linear transforms, func (4d) -> standard"
-    flirt -in       ${fpath}_brain \
-          -out      ${fpath}_brain_atl_affine \
-          -ref      $STANDARD_BRAIN \
-          -applyxfm \
-          -init     $d/reg/${fbase}.func2standard.mat \
-          -interp   trilinear
 
 }
 
@@ -384,6 +317,46 @@ run_fcpreproc () {
               -m $MASK_VENTRICLES \
               -o $d/nuisance/${fbase}.regressor.ventricles.txt
 
+
+    # calculate mean signal derivatives (backwards diff)
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.ventricles.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.ventricles.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.wholebrain.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.wholebrain.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.wm.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.wm.deriv.txt
+
+    # calculate motion derivatives (backwards diff)
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion1.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion1.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion2.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion2.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion3.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion3.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion4.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion4.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion5.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion5.deriv.txt
+
+    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion6.txt \
+               -backward_diff \
+               -write $d/nuisance/${fbase}.regressor.motion6.deriv.txt
+
+
     # bandpass
     echo " * $fbase: Applying bandpass filter (low: $BPSS_LO, high: $BPSS_HI)"
     echo " *    while regressing out nuisance signals (motion, wm, whole brain, csf)"
@@ -392,17 +365,24 @@ run_fcpreproc () {
                -ort    $d/nuisance/${fbase}.regressor.wm.txt \
                -ort    $d/nuisance/${fbase}.regressor.wholebrain.txt \
                -ort    $d/nuisance/${fbase}.regressor.ventricles.txt \
+               -ort    $d/nuisance/${fbase}.regressor.wm.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.wholebrain.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.ventricles.deriv.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion1.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion2.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion3.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion4.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion5.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion6.txt \
-               -mask   $MASK_WHOLEBRAIN \
+               -ort    $d/nuisance/${fbase}.regressor.motion1.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.motion2.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.motion3.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.motion4.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.motion5.deriv.txt \
+               -ort    $d/nuisance/${fbase}.regressor.motion6.deriv.txt \
+               -mask   $STANDARD_MASK \
                        $BPSS_LO $BPSS_HI \
                        ${fpath}_fwhm${FWHM}_gms.nii.gz
-
-    ln -s -T ${fpath}_fwhm${FWHM}_bpss_resid.nii.gz $SUBJECT_DIR/$fbase.nii.gz
 
 }
 
@@ -433,12 +413,16 @@ for bold in ${BOLDS[@]}; do
     # motion correction <input base> <name>
     run_func_motion $d/${name}_reorient_skip_tc $name
 
+    # func skullstrip (and create mean)
+    run_func_skullstrip $d/${name}_reorient_skip_tc_mc $name
+
     # func registration <input base> <name>
-    run_func_reg $d/${name}_reorient_skip_tc_mc $name
+    run_func_reg_and_normalize $d/${name}_reorient_skip_tc_mc
 
     # smoothing, bandpass <input base> <name>
     if $DO_NONLINEAR_REG; then 
-        run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_warp &
+        echo "WARNING: non-linear disabled"
+        #run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_warp $name &
     fi
     run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_affine $name &
 
@@ -463,4 +447,5 @@ else
     ln -s -T $runs_lin $d/rest_fwhm$FWHM.nii.gz
 fi
 
+exit
 
