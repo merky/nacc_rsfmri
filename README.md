@@ -8,11 +8,17 @@ showing version(s) currently tested...
 
 ### Preprocessing
 
-    rsfmri_preproc <outputdir>/<subjid> <path-to>/anat.nii.gz <path-to>/func.nii.gz [<path-to>/func.nii.gz]
+```bash
+rsfmri_preproc <outputdir>/<subjid> \
+               <path-to>/anat.nii.gz \
+               <path-to>/func1.nii.gz [<path-to>/func2.nii.gz]
+```
 
 
 ### Analysis
 
-    rsfmri_conn --help
+```bash
+rsfmri_conn --help
+```
 
 will display command-line options
