@@ -21,7 +21,6 @@ from reports  import *
 #########################################
 # 1st-level analysis
 #########################################
-# TODO: started, but need to finish this
 
 class FCSeedAnalysis(object):
     def __init__(self, project, session, seed):
@@ -302,18 +301,20 @@ class FCProject(object):
                 # replace spaces with underscore
                 n = re.sub(' ','_',n).lower()
                 # following 3 fields are coords, convert to float
-                x,y,z = [float(j) for j in fields[1:4]]
+                x,y,z = [float(j.strip()) for j in fields[1:4]]
                 # radius is optional, so we need to check that it was specified somewhere
                 if radius is None:
                     if len(fields) == 5:
-                        radius = float(fields[5])
+                        seed_radius = float(fields[4].strip())
                     else:
                         log.error('When creating seed from a file, you must specify the radius in the file itself or on the command line')
                         self.exit()
+                else:
+                    seed_radius = radius
 
                 # create seed
                 seed = FCSeed(self, n)
-                seed.create(x,y,z,radius)
+                seed.create(x,y,z,seed_radius)
                 self.add_seed(seed)
         except:
             log.error('Problem importing seed coordinates from file {}'.format(list_file))
