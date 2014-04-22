@@ -1,0 +1,79 @@
+#!/usr/bin/python
+
+import os
+import sys
+import argparse
+
+# our files
+from rsfmri.seed  import FCSeed, create_seeds_from_file
+
+# check for file
+def file_input_type(x):
+    if not os.path.exists(x):
+        print('File cannot be found: {}'.format(x))
+    return x
+
+# arguments
+def parse_args():
+    parser    = argparse.ArgumentParser(description='Standalone command to create seeds from coordinates')
+
+    # one of the following
+    parser.add_argument('--output','-o', metavar='dir', required=True, help='Output directory')
+    parser.add_argument('--coord', metavar=('name','x','y','z'), nargs=4, action='append',
+                           help='Specify seed coordinates (x,y,z). Can use multiple times.')
+    parser.add_argument('--coordlist', metavar='file', type=file_input_type,
+                           help='File containing seed coordinates on each line (format: name, x, y, z, [radius])')
+
+    # options
+    parser.add_argument('--radius', '-r', metavar='x', type=int,
+                           help='Spherical radius (in mm) of seeds (required with --seed and overwrites any radius specified when using --coordlist)')
+
+    # parse user input
+    args = parser.parse_args()
+
+    # let's take a look at the seed argument, if available
+    if getattr(args,'coord') is not None:
+        # dependent on radius argument
+        if getattr(args,'radius') is None:
+            print('If coordinate input, must specify radius')
+            sys.exit()
+
+        # check that seed inputs are of correct type
+        for seed in args.coord:
+            try:
+                name,x,y,z = seed
+                seed = [name,float(x),float(y),float(z)]
+            except:
+                print('seed input not in correct format: {}'.format(seed))
+                sys.exit()
+
+    if getattr(args,'coord') is None and getattr(args,'coordlist') is None:
+        print('No input coordinates found. Must use --coord and/or --coordlist')
+        sys.exit()
+
+    return args
+
+
+if __name__ == '__main__':
+    args = parse_args()
+
+    # create directory, if does not exist
+    outdir = os.path.abspath(args.output)
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
+
+    seeds=[]
+    # create seeds from coords, if necessary
+    if args.coord is not None:
+        for name, x, y, z in args.coord:
+            seed = FCSeed(outdir, name)
+            seed.create(x,y,z,args.radius)
+            seeds.append(seed.file)
+
+    if args.coordlist is not None:
+        for seed in create_seeds_from_file(outdir, args.coordlist, args.radius):
+            seeds.append(seed.file)
+
+    for seed in seeds:
+        print('Volume created: {}'.format(seed))
+
