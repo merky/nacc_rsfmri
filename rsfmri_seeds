@@ -68,12 +68,15 @@ if __name__ == '__main__':
         for name, x, y, z in args.coord:
             seed = FCSeed(outdir, name)
             seed.create(x,y,z,args.radius)
-            seeds.append(seed.file)
+            seeds.append(seed)
 
     if args.coordlist is not None:
         for seed in create_seeds_from_file(outdir, args.coordlist, args.radius):
-            seeds.append(seed.file)
+            seeds.append(seed)
 
+    f = open('{}/files.lst'.format(outdir),'w')
     for seed in seeds:
-        print('Volume created: {}'.format(seed))
+        print('Volume created: {}'.format(seed.file))
+        f.writelines("{},{}\n".format(seed.name,seed.file))
+    f.close()
 
