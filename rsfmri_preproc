@@ -27,8 +27,14 @@ shift
 BOLDS=($@)
 BOLDN=$#
 
-
+#################################
 # settings
+#################################
+
+# used for debugging
+RUN_ANAT_INIT=true
+RUN_FUNC_INIT=true
+RUN_REG=true
 
 # script directory
 script_dir=$(echo $(cd $(dirname $(readlink -f $0)); pwd) )
@@ -56,6 +62,11 @@ export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=8
 # output dir
 d=$SUBJECT_DIR/$PROCESS_DIR
 
+
+#################################
+# Summary
+#################################
+
 # show user current settings
 echo " * There are $BOLDN BOLD runs to be processed..."
 echo " * Input BOLD files: ${BOLDS[@]}"
@@ -66,6 +77,10 @@ echo " * BANDPASS LO : $BPSS_LO Hz"
 echo " * BANDPASS HI : $BPSS_HI Hz"
 echo " * OUTPUT DIR  : $d"
 echo ""
+
+#################################
+# Initial Setup
+#################################
 
 # create output dirs
 echo " * Creating directories..."
@@ -85,6 +100,9 @@ get_tr () {
     echo $(echo "scale=2;$tr/1000" | bc)
 }
 
+#################################
+# Anatomy
+#################################
 
 # initialize anatomy volume 
 run_anat_init () {
@@ -111,12 +129,30 @@ run_anat_reg () {
 
     # normalize anat -> template
     echo " * Normalizing anat -> standard"
-    antsIntroduction.sh -d 3 \
-                        -i $d/anat_brain.nii.gz \
-                        -r $standard \
-                        -o $d/anat_brain_atl_
+
+    ANTS 3 \
+        -m PR[$standard,$d/anat_brain.nii.gz,1,4] \
+        -t SyN[0.25] \
+        -r Gauss[3,0] \
+        -o $d/anat_brain_atl_ \
+        -i 30x90x20 \
+        --use-Histogram-Matching \
+        --number-of-affine-iterations 10000x10000x10000x10000x10000 \
+        --MI-option 32x16000
+
+    WarpImageMultiTransform 3 \
+        $d/anat_brain.nii.gz \
+        $d/anat_brain_atl_affine.nii.gz \
+        $d/anat_brain_atl_Warp.nii.gz \
+        $d/anat_brain_atl_Affine.txt \
+        -R $standard
+
 }
 
+
+#################################
+# Functional
+#################################
 
 #############################################
 # copy data, reorient, slice time correction
@@ -241,21 +277,36 @@ run_func_motion () {
 run_func_reg_and_normalize () {
     fpath=$1
 
+    fixed=$d/anat_brain.nii.gz
+    moving=${fpath}_mean_brain.nii.gz
+    output=${fpath}_mean_brain_2anat_
+
     # coregister func -> anat (using ANTs)
     echo " * coregistration "
-    rsfmri_coreg 3 \
-                 $d/anat_brain.nii.gz \
-                 ${fpath}_mean_brain.nii.gz \
-                 ${fpath}_mean_brain_2anat_
+    ANTS 3 \
+         -m  MI[${fixed},${moving},1,32] \
+         -o  ${output} \
+         -i  0 \
+         --use-Histogram-Matching \
+         --number-of-affine-iterations 10000x10000x10000x10000x10000
 
-    # transform func -> template
-    echo " * normalizing anat -> standard "
+    # transform mean functional
+    WarpImageMultiTransform 3 \
+         $moving \
+         ${output}affine.nii.gz \
+         ${output}Affine.txt \
+         -R ${fixed}
+
+    # transform 4d func -> template...
+    # using linear transform from above, and
+    # the transform from anat -> standard
+    echo " * normalizing 4d func -> standard "
     WarpTimeSeriesImageMultiTransform 4 \
                         ${fpath}_brain.nii.gz \
                         ${fpath}_brain_atl_affine.nii.gz \
                         -R $STANDARD_BRAIN.nii.gz \
                         $d/anat_brain_atl_Affine.txt \
-                        ${fpath}_mean_brain_2anat_Affine.txt
+                        ${output}Affine.txt
 }
 
 
@@ -419,8 +470,11 @@ run_fcpreproc () {
 # we will fork some steps to speed things up
 #
 
-# init
-run_anat_init
+
+if [[ "$RUN_ANAT_INIT" == true ]]; then
+    # init
+    run_anat_init
+fi
 
 # anat registration
 run_anat_reg
@@ -433,17 +487,21 @@ for bold in ${BOLDS[@]}; do
 
     (
 
-    # initialize <input vol> <input base>
-    run_func_init $bold $d/$name
+    if [[ "$RUN_FUNC_INIT" == true ]]; then
+        # initialize <input vol> <input base>
+        run_func_init $bold $d/$name
 
-    # motion correction <input base> <name>
-    run_func_motion $d/${name}_reorient_skip_tc $name
+        # motion correction <input base> <name>
+        run_func_motion $d/${name}_reorient_skip_tc $name
 
-    # func skullstrip (and create mean)
-    run_func_skullstrip $d/${name}_reorient_skip_tc_mc $name
+        # func skullstrip (and create mean)
+        run_func_skullstrip $d/${name}_reorient_skip_tc_mc $name
+    fi
 
-    # func registration <input base> <name>
-    run_func_reg_and_normalize $d/${name}_reorient_skip_tc_mc
+    if [[ "$RUN_REG" == true ]]; then
+        # func registration <input base> <name>
+        run_func_reg_and_normalize $d/${name}_reorient_skip_tc_mc
+    fi
 
     # func scaling
     run_func_scaling $d/${name}_reorient_skip_tc_mc_brain_atl_affine
