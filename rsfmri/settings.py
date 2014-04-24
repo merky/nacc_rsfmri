@@ -7,6 +7,9 @@ import logging
 # settings
 ########################
 
+# processes
+max_num_threads = 40
+
 # standard volume
 mri_standard   = '{}/data/standard/MNI152_T1_2mm_brain.nii.gz'.format(os.environ['FSLDIR'])
 mri_brain_mask = '{}/data/standard/MNI152_T1_2mm_brain_mask.nii.gz'.format(os.environ['FSLDIR'])

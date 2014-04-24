@@ -8,7 +8,7 @@ from multiprocessing.pool import ThreadPool
 from .settings import *
 
 # our thread pool
-task_pool = ThreadPool()
+task_pool = ThreadPool(processes=max_num_threads)
 
 
 # run command (blocking)
@@ -39,7 +39,7 @@ def run_cmd(cmdstr):
 # reset thread pool
 def reset_tasks():
     global task_pool
-    task_pool = ThreadPool()
+    task_pool = ThreadPool(processes=max_num_threads)
     return task_pool
 
 # run command in thread
