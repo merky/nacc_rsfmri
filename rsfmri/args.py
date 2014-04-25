@@ -68,8 +68,8 @@ def parse_args():
     # options
     parser.add_argument('--radius', '-r', metavar='x', type=int,
                         help='Spherical radius (in mm) of seeds (required with --seed and overwrites any radius specified when using --coordlist)')
-    parser.add_argument('--fwhm', '--smoothing', metavar='0/2/6', type=int, default=6, choices=[0,2,6],
-                        help='Kernel size (in mm) for fwhm smoothing of preprocessed images (default 6mm; possible options: 0,2,6)')
+    parser.add_argument('--fwhm', '--smoothing', metavar='0/4/6', type=int, default=6, choices=[0,4,6],
+                        help='Kernel size (in mm) for fwhm smoothing of preprocessed images (default 6mm; possible options: 0,4,6)')
 
     # parse user input
     args = parser.parse_args()
