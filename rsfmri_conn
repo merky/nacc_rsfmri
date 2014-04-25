@@ -28,7 +28,7 @@ if __name__ == '__main__':
         session_ids = args.session
 
     # create session objects
-    sessions = [FCSession(s,args.sessdir) for s in session_ids]
+    sessions = [FCSession(s,args.sessdir,fwhm=args.fwhm) for s in session_ids]
 
     # initialize analysis object
     analysis = FCProject(args.label, args.output, args.sessdir, sessions)

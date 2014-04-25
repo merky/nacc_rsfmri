@@ -21,8 +21,8 @@ fwhm = 6
 restproc_dir = 'restproc'
 
 # filename of preprocessed residual volume
-#restproc_file = 'rest_reorient_skip_tc_mc_brain_atl_affine_fwhm%d_bpss_resid.nii.gz' % fwhm
-restproc_file = 'rest_fwhm%d.nii.gz' % fwhm
+# (found in subject's restproc dir)
+restproc_file_template = 'rest_fwhm{}.nii.gz'
 
 # log properties
 log_filebase = 'analysis.log'
