@@ -376,10 +376,12 @@ class FCProject(object):
         # run t-test
         if ttest:
             log.info('running group t-test on z-maps, roi={}'.format(seed.name))
-            outbase = os.path.join(self.dir_grp_vols_ttest, '{}'.format(seed.name))
-            cmd = "randomise -i {} -o {} -m {} -1 -T".format(tmp, outbase, mri_brain_mask)
+            outbase = os.path.join(self.dir_grp_vols_ttest, '{}.nii.gz'.format(seed.name))
+            cmd = "3dttest++ -setA {} -prefix {} -mask {}".format(tmp, outbase, mri_brain_mask)
             run_cmd(cmd)
 
+        # remove 4d file
+        os.remove(tmp)
 
     def generate_report(self):
 
