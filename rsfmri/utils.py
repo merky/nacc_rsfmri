@@ -1,15 +1,23 @@
 #!/usr/bin/python
 
-import sys
+import sys, os
 import subprocess as sub
 from multiprocessing.pool import ThreadPool
 
 # our imports
 from .settings import *
 
+# number of threads is socket * cores
+def calc_num_threads():
+    cmd='lscpu | grep -e Socket -e Core | cut -d: -f2'
+    values = [int(x.strip()) for x in os.popen(cmd).readlines()]
+    return reduce(lambda x,y: x*y, values)
+
+# override default from settings
+max_num_threads = calc_num_threads()
+
 # our thread pool
 task_pool = ThreadPool(processes=max_num_threads)
-
 
 # run command (blocking)
 def run_cmd(cmdstr):
