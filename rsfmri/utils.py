@@ -3,21 +3,42 @@
 import sys, os
 import subprocess as sub
 from multiprocessing.pool import ThreadPool
+from multiprocessing import cpu_count
 
 # our imports
 from .settings import *
 
+
 # number of threads is socket * cores
 def calc_num_threads():
-    cmd='lscpu | grep -e Socket -e Core | cut -d: -f2'
-    values = [int(x.strip()) for x in os.popen(cmd).readlines()]
-    return reduce(lambda x,y: x*y, values)
+    try:
+        # get number of cpus (ignore hyperthreading... just 'cus)
+        cmd = 'lscpu | grep -e Socket -e Core | cut -d: -f2'
+        cpu_info = [int(x.strip()) for x in os.popen(cmd).readlines()]
+        cpu_num  = reduce(lambda x,y: x*y, cpu_info)
 
-# override default from settings
-max_num_threads = calc_num_threads()
+        # get current number of "active" threads
+        cmd = 'cat /proc/loadavg | awk \'{print $4}\' | cut -d/ -f1'
+        thread_count = int(os.popen(cmd).readlines()[0])
+
+        # mostly use active threads to guide our decision
+        cpu_approx_free = cpu_num - thread_count
+
+        use_threads = max([cpu_approx_free, 1])
+
+    except:
+        use_threads = max([cpu_count()/2, 1])
+
+    return use_threads
+
 
 # our thread pool
-task_pool = ThreadPool(processes=max_num_threads)
+def get_task_pool():
+    return ThreadPool(processes=calc_num_threads())
+
+
+task_pool = get_task_pool()
+
 
 # run command (blocking)
 def run_cmd(cmdstr):
@@ -44,16 +65,19 @@ def run_cmd(cmdstr):
     # return stdout string
     return stdout
 
+
 # reset thread pool
 def reset_tasks():
     global task_pool
-    task_pool = ThreadPool(processes=max_num_threads)
+    task_pool = get_task_pool()
     return task_pool
+
 
 # run command in thread
 def run_cmd_parallel(cmdstr):
     t = task_pool.apply_async(run_cmd, (cmdstr,))
     return t
+
 
 # wait for all current threads to end
 def wait_for_tasks():
