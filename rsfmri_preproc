@@ -280,7 +280,7 @@ run_func_reg_and_normalize () {
 
     # coregister func -> anat (using ANTs)
     echo " * coregistration "
-    """
+
     ANTS 3 \
         -m PR[$fixed,$moving,1,4] \
         -t SyN[0.25] \
@@ -290,14 +290,15 @@ run_func_reg_and_normalize () {
         --use-Histogram-Matching \
         --number-of-affine-iterations 10000x10000x10000x10000x10000 \
         --MI-option 32x16000
-    """
 
+    echo """
     ANTS 3 \
          -m  PR[${fixed},${moving},1,0] \
          -o  ${output} \
          -i  0 \
          --use-Histogram-Matching \
          --number-of-affine-iterations 10000x10000x10000x10000x10000
+    """ > /dev/null
 
     # transform mean functional
     WarpImageMultiTransform 3 \
