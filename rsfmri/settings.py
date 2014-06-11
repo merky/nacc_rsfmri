@@ -22,7 +22,7 @@ restproc_dir = 'restproc'
 
 # filename of preprocessed residual volume
 # (found in subject's restproc dir)
-restproc_file_template = 'rest_fwhm{}.nii.gz'
+restproc_file_template = 'rest_warp_fwhm{}.nii.gz'
 
 # log properties
 log_filebase = 'analysis.log'

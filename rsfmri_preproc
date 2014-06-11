@@ -35,6 +35,7 @@ BOLDN=$#
 RUN_ANAT_INIT=true
 RUN_FUNC_INIT=true
 RUN_REG=true
+RUN_WARP_REG=true # default usually false
 
 # script directory
 script_dir=$(echo $(cd $(dirname $(readlink -f $0)); pwd) )
@@ -60,7 +61,7 @@ FNIRT_CONF=$FSLDIR/etc/flirtsch/T1_2_MNI152_2mm.cnf
 export ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=8
 
 # output dir
-d=$SUBJECT_DIR/$PROCESS_DIR
+d=$(readlink -f $SUBJECT_DIR)/$PROCESS_DIR
 
 
 #################################
@@ -106,7 +107,7 @@ get_tr () {
 
 # initialize anatomy volume 
 run_anat_init () {
-    tmpfile=`mktemp --suffix=.nii.gz`
+    local tmpfile=`mktemp --suffix=.nii.gz`
     scp $ANAT $tmpfile
     # deoblique
     3drefit -deoblique $tmpfile
@@ -122,7 +123,7 @@ run_anat_init () {
 
 # register anatomy to standard
 run_anat_reg () {
-    standard=$(mktemp --suffix .nii.gz)
+    local standard=$(mktemp --suffix .nii.gz)
 
     # make copy of template volume (ANTs requires)
     cp $STANDARD_BRAIN.nii.gz $standard
@@ -140,10 +141,18 @@ run_anat_reg () {
         --number-of-affine-iterations 10000x10000x10000x10000x10000 \
         --MI-option 32x16000
 
+    # non-linear
+    WarpImageMultiTransform 3 \
+        $d/anat_brain.nii.gz \
+        $d/anat_brain_atl_warp.nii.gz \
+        $d/anat_brain_atl_Warp.nii.gz \
+        $d/anat_brain_atl_Affine.txt \
+        -R $standard
+
+    # affine
     WarpImageMultiTransform 3 \
         $d/anat_brain.nii.gz \
         $d/anat_brain_atl_affine.nii.gz \
-        $d/anat_brain_atl_Warp.nii.gz \
         $d/anat_brain_atl_Affine.txt \
         -R $standard
 
@@ -161,8 +170,8 @@ run_anat_reg () {
 # output: <filebase>_reorient_skip_tc
 #############################################
 run_func_init () {
-    inputvol=$1
-    fpath=$2
+    local inputvol=$1
+    local fpath=$2
 
     # functional inputs
     echo " * Copying functional image to dir"
@@ -207,8 +216,8 @@ run_func_init () {
 # output: <filebase>_mc
 #############################################
 run_func_motion () {
-    fpath=$1
-    fbase=$2
+    local fpath=$1
+    local fbase=$2
 
     echo " * $fbase: Motion correction"
     mcflirt -in $fpath \
@@ -235,35 +244,23 @@ run_func_motion () {
 
     # save motion regressors as separate files 
     for x in $(seq 1 6); do
+        # parse and output motion values
         cat ${fpath}_mc.par |
         awk '{print $'${x}'}' > $d/nuisance/${fbase}.regressor.motion${x}.txt
+
+        # calculate motion derivatives (backwards diff)
+        1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion${x}.txt \
+                   -backward_diff \
+                   -write $d/nuisance/${fbase}.regressor.motion${x}.deriv.txt
+
+    if [[ "$RUN_WARP_REG" == true ]]; then
+        cp $d/nuisance/${fbase}.regressor.motion${x}.deriv.txt \
+           $d/nuisance/${fbase}.warp.regressor.motion${x}.deriv.txt
+
+        cp $d/nuisance/${fbase}.regressor.motion${x}.txt \
+           $d/nuisance/${fbase}.warp.regressor.motion${x}.txt
+    fi
     done
-
-
-    # calculate motion derivatives (backwards diff)
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion1.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion1.deriv.txt
-
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion2.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion2.deriv.txt
-
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion3.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion3.deriv.txt
-
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion4.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion4.deriv.txt
-
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion5.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion5.deriv.txt
-
-    1d_tool.py -infile $d/nuisance/${fbase}.regressor.motion6.txt \
-               -backward_diff \
-               -write $d/nuisance/${fbase}.regressor.motion6.deriv.txt
 
 }
 
@@ -275,7 +272,7 @@ run_func_motion () {
 # output: <filebase>[_brain]_atl_affine
 #############################################
 run_func_reg_and_normalize () {
-    fpath=$1
+    local fpath=$1
 
     fixed=$d/anat_brain.nii.gz
     moving=${fpath}_mean_brain.nii.gz
@@ -283,8 +280,20 @@ run_func_reg_and_normalize () {
 
     # coregister func -> anat (using ANTs)
     echo " * coregistration "
+    """
     ANTS 3 \
-         -m  MI[${fixed},${moving},1,32] \
+        -m PR[$fixed,$moving,1,4] \
+        -t SyN[0.25] \
+        -r Gauss[3,0] \
+        -o $output \
+        -i 30x90x20 \
+        --use-Histogram-Matching \
+        --number-of-affine-iterations 10000x10000x10000x10000x10000 \
+        --MI-option 32x16000
+    """
+
+    ANTS 3 \
+         -m  PR[${fixed},${moving},1,0] \
          -o  ${output} \
          -i  0 \
          --use-Histogram-Matching \
@@ -307,6 +316,17 @@ run_func_reg_and_normalize () {
                         -R $STANDARD_BRAIN.nii.gz \
                         $d/anat_brain_atl_Affine.txt \
                         ${output}Affine.txt
+
+    if [[ "$RUN_WARP_REG" == true ]]; then
+        echo " * normalizing 4d func -> standard (non-linear warping)"
+        WarpTimeSeriesImageMultiTransform 4 \
+                            ${fpath}_brain.nii.gz \
+                            ${fpath}_brain_atl_warp.nii.gz \
+                            -R $STANDARD_BRAIN.nii.gz \
+                            $d/anat_brain_atl_Warp.nii.gz \
+                            $d/anat_brain_atl_Affine.txt \
+                            ${output}Affine.txt
+    fi
 }
 
 
@@ -317,8 +337,8 @@ run_func_reg_and_normalize () {
 # output: <filebase>_brain
 #############################################
 run_func_skullstrip() {
-    fpath=$1
-    fbase=$2
+    local fpath=$1
+    local fbase=$2
 
     # create mean of functional
     fslmaths        ${fpath} \
@@ -364,7 +384,7 @@ run_func_skullstrip() {
 
 # scale signal by factor of 1000
 run_func_scaling () {
-    fpath=$1
+    local fpath=$1
     # grand mean scaling
     fslmaths      ${fpath} \
              -ing 1000 \
@@ -375,8 +395,8 @@ run_func_scaling () {
 # extract mean signal from ventricles, white matter, and whole brain
 run_func_extract_regressors () {
     # note: motion regressors were extracted durin motion correction
-    fpath=$1
-    fbase=$2
+    local fpath=$1
+    local fbase=$2
 
     # extract mean wm time series
     echo " * $fbase: Extracting mean white-matter time course signal"
@@ -419,11 +439,11 @@ run_func_extract_regressors () {
 #  input: <filebase> NAME
 # output: <filebase>_fwhm#_bpss_resid
 run_fcpreproc () {
-    fpath=$1
-    fbase=$2
-    fwhm=$3
+    local fpath=$1
+    local fbase=$2
+    local fwhm=$3
 
-    # guassian smooth
+    # smoothing
     if [[ $fwhm -eq 0 ]]; then
         echo " * $fbase: skipping smoothing to create fwhm=0 image"
         scp ${fpath}.nii.gz ${fpath}_fwhm${fwhm}.nii.gz
@@ -435,17 +455,20 @@ run_fcpreproc () {
                         ${fpath}.nii.gz
     fi
 
+    # extract nuisance regressors
+    run_func_extract_regressors ${fpath}_fwhm${fwhm} ${fbase}.${fwhm}
+
     # bandpass
     echo " * $fbase (fwhm=$fwhm): Applying bandpass filter (low: $BPSS_LO, high: $BPSS_HI)"
     echo " *    while regressing out nuisance signals (motion, wm, whole brain, csf)"
     echo " *    as well as constant, linear, and quadratic trends"
     3dBandpass -prefix ${fpath}_fwhm${fwhm}_bpss_resid.nii.gz \
-               -ort    $d/nuisance/${fbase}.regressor.wm.txt \
-               -ort    $d/nuisance/${fbase}.regressor.wholebrain.txt \
-               -ort    $d/nuisance/${fbase}.regressor.ventricles.txt \
-               -ort    $d/nuisance/${fbase}.regressor.wm.deriv.txt \
-               -ort    $d/nuisance/${fbase}.regressor.wholebrain.deriv.txt \
-               -ort    $d/nuisance/${fbase}.regressor.ventricles.deriv.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.wm.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.wholebrain.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.ventricles.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.wm.deriv.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.wholebrain.deriv.txt \
+               -ort    $d/nuisance/${fbase}.${fwhm}.regressor.ventricles.deriv.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion1.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion2.txt \
                -ort    $d/nuisance/${fbase}.regressor.motion3.txt \
@@ -480,6 +503,7 @@ fi
 run_anat_reg
 
 runs=()
+runs_warp=()
 
 n=1
 for bold in ${BOLDS[@]}; do
@@ -487,35 +511,47 @@ for bold in ${BOLDS[@]}; do
 
     (
 
-    if [[ "$RUN_FUNC_INIT" == true ]]; then
-        # initialize <input vol> <input base>
-        run_func_init $bold $d/$name
+        if [[ "$RUN_FUNC_INIT" == true ]]; then
+            # initialize <input vol> <input base>
+            run_func_init $bold $d/$name
 
-        # motion correction <input base> <name>
-        run_func_motion $d/${name}_reorient_skip_tc $name
+            # motion correction <input base> <name>
+            run_func_motion $d/${name}_reorient_skip_tc $name
 
-        # func skullstrip (and create mean)
-        run_func_skullstrip $d/${name}_reorient_skip_tc_mc $name
-    fi
+            # func skullstrip (and create mean)
+            run_func_skullstrip $d/${name}_reorient_skip_tc_mc $name
+        fi
 
-    if [[ "$RUN_REG" == true ]]; then
-        # func registration <input base> <name>
-        run_func_reg_and_normalize $d/${name}_reorient_skip_tc_mc
-    fi
+        if [[ "$RUN_REG" == true ]]; then
+            # func registration <input base>
+            run_func_reg_and_normalize $d/${name}_reorient_skip_tc_mc
+        fi
 
-    # func scaling
-    run_func_scaling $d/${name}_reorient_skip_tc_mc_brain_atl_affine
+        # func scaling
+        run_func_scaling $d/${name}_reorient_skip_tc_mc_brain_atl_affine &
+        if [[ "$RUN_WARP_REG" == true ]]; then
+            run_func_scaling $d/${name}_reorient_skip_tc_mc_brain_atl_warp &
+        fi
+        wait
 
-    # func regressor extraction
-    run_func_extract_regressors $d/${name}_reorient_skip_tc_mc_brain_atl_affine_gms $name
+        # func regressor extraction
+        #run_func_extract_regressors $d/${name}_reorient_skip_tc_mc_brain_atl_affine_gms $name &
+        #if [[ "$RUN_WARP_REG" == true ]]; then
+        #    run_func_extract_regressors $d/${name}_reorient_skip_tc_mc_brain_atl_warp_gms ${name}.warp &
+        #fi
+        #wait
 
-    # we will process multiple smoothing kernels
-    for fwhm in $FWHMS; do
-        run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_affine_gms $name $fwhm &
-    done
 
-    wait # wait for sub-threads (linear/nonlinear reg)
-    exit
+        # we will process multiple smoothing kernels
+        for fwhm in $FWHMS; do
+            run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_affine_gms $name $fwhm &
+            if [[ "$RUN_WARP_REG" == true ]]; then
+                run_fcpreproc $d/${name}_reorient_skip_tc_mc_brain_atl_warp_gms ${name}.warp  $fwhm &
+            fi
+        done
+        wait
+
+        exit
 
     ) &
 
@@ -524,6 +560,11 @@ for bold in ${BOLDS[@]}; do
     for fwhm in $FWHMS; do
         run_path="$d/${name}_reorient_skip_tc_mc_brain_atl_affine_gms_fwhm${fwhm}_bpss_resid.nii.gz"
         runs[$fwhm]="${runs[$fwhm]} $run_path"
+
+        if [[ "$RUN_WARP_REG" == true ]]; then
+            run_path_warp="$d/${name}_reorient_skip_tc_mc_brain_atl_warp_gms_fwhm${fwhm}_bpss_resid.nii.gz"
+            runs_warp[$fwhm]="${runs_warp[$fwhm]} $run_path_warp"
+        fi
     done
 
     # increase rest volume count
@@ -538,9 +579,11 @@ wait
 for fwhm in $FWHMS; do
     if [[ $BOLDN -gt 1 ]]; then
         # combine runs into a single, concatenated 4d file
-        fslmerge -t $d/rest_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
+        fslmerge -t $d/rest_affine_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
+        [[ "$RUN_WARP_REG" == true ]] && fslmerge -t $d/rest_warp_fwhm${fwhm}.nii.gz ${runs_warp[$fwhm]}
     else
-        ln -s -T ${runs[$fwhm]} $d/rest_fwhm${fwhm}.nii.gz
+        ln -s -T ${runs[$fwhm]} $d/rest_affine_fwhm${fwhm}.nii.gz
+        [[ "$RUN_WARP_REG" == true ]] && ln -s -T ${runs_warp[$fwhm]} $d/rest_warp_fwhm${fwhm}.nii.gz
     fi
 done
 
