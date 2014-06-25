@@ -298,17 +298,6 @@ run_func_reg_and_normalize () {
          ${output}Affine.txt \
          -R ${fixed}
 
-    # transform 4d func -> template...
-    # using linear transform from above, and
-    # the transform from anat -> standard
-    echo " * normalizing 4d func -> standard "
-    WarpTimeSeriesImageMultiTransform 4 \
-                        ${fpath}_brain.nii.gz \
-                        ${fpath}_brain_atl_affine.nii.gz \
-                        -R $STANDARD_BRAIN.nii.gz \
-                        $d/anat_brain_atl_Affine.txt \
-                        ${output}Affine.txt
-
     if [[ "$RUN_WARP_REG" == true ]]; then
         echo " * normalizing 4d func -> standard (non-linear warping)"
         echo " * using SPM ..."
