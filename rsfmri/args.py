@@ -54,12 +54,12 @@ def parse_args():
                            help='Volume file to use as single seed. Can use multiple times.')
 
     # actions
-    actgroup.add_argument('--skip-voxelwise', action='store_false', dest='voxelwise',
-                          help="Skip voxelwise correlations; default is to run")
-    actgroup.add_argument('--skip-matrix', action='store_false', dest='matrix',
-                          help='Skip ROI-ROI correlations; default is to run')
+    actgroup.add_argument('--voxelwise', action='store_true', dest='voxelwise', default=False,
+                          help="Run voxelwise correlations (map)")
+    actgroup.add_argument('--matrix', action='store_true', dest='matrix', default=False,
+                          help='Run ROI-ROI correlations (corr. matrix)')
     actgroup.add_argument('--ttest', action='store_true', default=False, dest='ttest',
-                          help="Run group-level ttests; default is to skip")
+                          help="Run group-level t-tests")
     actgroup.add_argument('--skip-group-stats', action='store_false', dest='group_stats',
                           help='Skip all group-level stats; default is to run')
     actgroup.add_argument('--overwrite', '-W', action='store_true',
@@ -74,11 +74,14 @@ def parse_args():
     # parse user input
     args = parser.parse_args()
 
+    if args.voxelwise is None and args.matrix is None:
+        log.error('You need to specify an action (either/both --voxelwise or --matrix); see --help.')
+        sys.exit()
+
     # check that volume is file
     if args.seedvol is not None:
         for name, vol in args.seedvol:
             file_input_type(vol)
-
 
     # let's take a look at the seed argument, if available
     if getattr(args,'coord') is not None:
