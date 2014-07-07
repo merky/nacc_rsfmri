@@ -300,7 +300,7 @@ run_func_reg_and_normalize () {
 
     if [[ "$RUN_WARP_REG" == true ]]; then
         echo " * normalizing 4d func -> standard (non-linear warping)"
-        echo " * using SPM ..."
+        echo " * using SPM & T2 MNI EPI TEMPLATE..."
         spm_normalize ${fpath}_brain.nii.gz \
                       ${fpath}_brain_atl_warp.nii.gz
     fi
@@ -556,10 +556,10 @@ wait
 for fwhm in $FWHMS; do
     if [[ $BOLDN -gt 1 ]]; then
         # combine runs into a single, concatenated 4d file
-        fslmerge -t $d/rest_affine_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
+        #fslmerge -t $d/rest_affine_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
         [[ "$RUN_WARP_REG" == true ]] && fslmerge -t $d/rest_warp_fwhm${fwhm}.nii.gz ${runs_warp[$fwhm]}
     else
-        ln -s -T ${runs[$fwhm]} $d/rest_affine_fwhm${fwhm}.nii.gz
+        #ln -s -T ${runs[$fwhm]} $d/rest_affine_fwhm${fwhm}.nii.gz
         [[ "$RUN_WARP_REG" == true ]] && ln -s -T ${runs_warp[$fwhm]} $d/rest_warp_fwhm${fwhm}.nii.gz
     fi
 done
