@@ -74,7 +74,7 @@ def parse_args():
     # parse user input
     args = parser.parse_args()
 
-    if args.voxelwise is None and args.matrix is None:
+    if args.voxelwise == False and args.matrix == False:
         log.error('You need to specify an action (either/both --voxelwise or --matrix); see --help.')
         sys.exit()
 
