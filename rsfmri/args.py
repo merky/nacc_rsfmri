@@ -74,7 +74,7 @@ def parse_args():
     # parse user input
     args = parser.parse_args()
 
-    if args.voxelwise is None and args.matrix is None:
+    if args.voxelwise == False and args.matrix == False:
         log.error('You need to specify an action (either/both --voxelwise or --matrix); see --help.')
         sys.exit()
 
@@ -82,6 +82,7 @@ def parse_args():
     if args.seedvol is not None:
         for name, vol in args.seedvol:
             file_input_type(vol)
+
 
     # let's take a look at the seed argument, if available
     if getattr(args,'coord') is not None:

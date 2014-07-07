@@ -291,15 +291,6 @@ run_func_reg_and_normalize () {
         --number-of-affine-iterations 10000x10000x10000x10000x10000 \
         --MI-option 32x16000
 
-    echo """
-    ANTS 3 \
-         -m  PR[${fixed},${moving},1,0] \
-         -o  ${output} \
-         -i  0 \
-         --use-Histogram-Matching \
-         --number-of-affine-iterations 10000x10000x10000x10000x10000
-    """ > /dev/null
-
     # transform mean functional
     WarpImageMultiTransform 3 \
          $moving \
@@ -307,26 +298,11 @@ run_func_reg_and_normalize () {
          ${output}Affine.txt \
          -R ${fixed}
 
-    # transform 4d func -> template...
-    # using linear transform from above, and
-    # the transform from anat -> standard
-    echo " * normalizing 4d func -> standard "
-    WarpTimeSeriesImageMultiTransform 4 \
-                        ${fpath}_brain.nii.gz \
-                        ${fpath}_brain_atl_affine.nii.gz \
-                        -R $STANDARD_BRAIN.nii.gz \
-                        $d/anat_brain_atl_Affine.txt \
-                        ${output}Affine.txt
-
     if [[ "$RUN_WARP_REG" == true ]]; then
         echo " * normalizing 4d func -> standard (non-linear warping)"
-        WarpTimeSeriesImageMultiTransform 4 \
-                            ${fpath}_brain.nii.gz \
-                            ${fpath}_brain_atl_warp.nii.gz \
-                            -R $STANDARD_BRAIN.nii.gz \
-                            $d/anat_brain_atl_Warp.nii.gz \
-                            $d/anat_brain_atl_Affine.txt \
-                            ${output}Affine.txt
+        echo " * using SPM & T2 MNI EPI TEMPLATE..."
+        spm_normalize ${fpath}_brain.nii.gz \
+                      ${fpath}_brain_atl_warp.nii.gz
     fi
 }
 
@@ -580,10 +556,10 @@ wait
 for fwhm in $FWHMS; do
     if [[ $BOLDN -gt 1 ]]; then
         # combine runs into a single, concatenated 4d file
-        fslmerge -t $d/rest_affine_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
+        #fslmerge -t $d/rest_affine_fwhm${fwhm}.nii.gz ${runs[$fwhm]}
         [[ "$RUN_WARP_REG" == true ]] && fslmerge -t $d/rest_warp_fwhm${fwhm}.nii.gz ${runs_warp[$fwhm]}
     else
-        ln -s -T ${runs[$fwhm]} $d/rest_affine_fwhm${fwhm}.nii.gz
+        #ln -s -T ${runs[$fwhm]} $d/rest_affine_fwhm${fwhm}.nii.gz
         [[ "$RUN_WARP_REG" == true ]] && ln -s -T ${runs_warp[$fwhm]} $d/rest_warp_fwhm${fwhm}.nii.gz
     fi
 done
